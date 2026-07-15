@@ -27,9 +27,6 @@ no API key. Each stem is decoded into the Web Audio API and played back from a s
 clock, so muting, soloing, and adjusting volume never breaks sync. Bounce the current mix back
 out to a WAV at any time.
 
-This is **Path B** from [`track-separation-research.md`](./track-separation-research.md): free,
-offline, best open-source quality, driven via the Demucs CLI.
-
 ```
 frontend/index.html   Single-page studio UI: drag-drop upload + Web Audio stem mixer + WAV export
 backend/app.py        FastAPI: upload -> demucs subprocess -> serve stem WAVs
