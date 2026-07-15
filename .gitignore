@@ -3,6 +3,9 @@
 # macOS
 .DS_Store
 
+# Internal research notes (not published)
+track-separation-research.md
+
 # Python
 .venv/
 __pycache__/
