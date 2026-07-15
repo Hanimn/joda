@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108">
+  <!-- Android Adaptive Icon - Foreground Layer (108dp)
+       Safe zone: inner 66dp (18dp inset on each side) -->
+  <g fill="#f0f0f0" transform="translate(21, 21)">
+    <!-- Content within 66×66 safe zone -->
+    <rect x="5.5" y="5.5" width="55" height="8" rx="2"/>
+    <rect x="0" y="18.5" width="66" height="8" rx="2" opacity="0.6"/>
+    <rect x="0" y="31.5" width="66" height="8" rx="2" opacity="0.4"/>
+    <rect x="0" y="44.5" width="66" height="8" rx="2" opacity="0.25"/>
+  </g>
+</svg>

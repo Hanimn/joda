@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- iOS App Store Icon (1024pt) -->
+  <rect width="1024" height="1024" fill="#1a1c21"/>
+  <g fill="#f0f0f0" transform="translate(160, 170)">
+    <rect x="56" y="56" width="592" height="84" rx="16"/>
+    <rect x="0" y="196" width="704" height="84" rx="16" opacity="0.6"/>
+    <rect x="0" y="336" width="704" height="84" rx="16" opacity="0.4"/>
+    <rect x="0" y="476" width="704" height="84" rx="16" opacity="0.25"/>
+  </g>
+</svg>

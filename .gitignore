@@ -1,0 +1,28 @@
+.devswarm-temp/
+
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# POC runtime data (uploads + separated stems can be large)
+backend/uploads/
+backend/separated/
+
+# Demucs model cache (downloaded on first run, ~80MB+)
+# lives in ~/.cache/torch by default, but ignore any local copy too
+models/
+
+# Sample audio (licensed stock track — don't redistribute)
+sample/
+
+# Local Claude Code settings / permissions
+.claude/
+
+# Brand kit — the full Claude Design output. The runtime assets the app and
+# README actually use were copied into frontend/assets/ and assets/github/,
+# which stay tracked; this source kit itself is not published.
+Joda-Branding/

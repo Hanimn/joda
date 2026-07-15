@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 432 432">
+  <!-- Android Adaptive Icon - Foreground @4x (108dp × 4) -->
+  <g fill="#f0f0f0" transform="translate(84, 84)">
+    <rect x="22" y="22" width="220" height="32" rx="8"/>
+    <rect x="0" y="74" width="264" height="32" rx="8" opacity="0.6"/>
+    <rect x="0" y="126" width="264" height="32" rx="8" opacity="0.4"/>
+    <rect x="0" y="178" width="264" height="32" rx="8" opacity="0.25"/>
+  </g>
+</svg>

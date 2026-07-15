@@ -1,0 +1,1276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>joda — stem separation</title>
+  <meta name="description" content="Separate any song into vocals, drums, bass, guitar, piano, and more — then mix each part live and export the result." />
+
+  <!-- Icons -->
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg" />
+  <link rel="apple-touch-icon" href="/assets/ios/icon-180.svg" />
+
+  <!-- Open Graph / Twitter -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="joda — stem separation" />
+  <meta property="og:description" content="Isolate vocals, drums, bass, guitar, piano, and more from any song, then mix live." />
+  <meta property="og:image" content="/assets/og-image.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="joda — stem separation" />
+  <meta name="twitter:image" content="/assets/og-image.svg" />
+
+  <!-- Fonts: Inter + JetBrains Mono (brand) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <style>
+    :root {
+      /* ---- joda brand tokens (OKLch, hex fallback in comments) ---- */
+      --bg:      oklch(14% 0.01 260);   /* #1a1c21 */
+      --surface: oklch(18% 0.01 260);   /* #24262d */
+      --fg:      oklch(95% 0 0);        /* #f0f0f0 */
+      --muted:   oklch(55% 0.01 260);   /* #7a7d85 */
+      --border:  oklch(25% 0.01 260);   /* #36383f */
+      --accent:  oklch(75% 0.18 180);   /* #2dd4bf teal */
+
+      /* Stem colors — consistent across UI (hex fallback from og-image.svg) */
+      --stem-vocals: oklch(70% 0.15 25);   /* coral  #e07b6b */
+      --stem-drums:  oklch(75% 0.15 70);   /* amber  #d4a84d */
+      --stem-bass:   oklch(60% 0.15 290);  /* violet #9b7ec7 */
+      --stem-guitar: oklch(65% 0.12 145);  /* green  #6ba86b */
+      --stem-piano:  oklch(65% 0.12 240);  /* blue   #6b9dd4 */
+      --stem-other:  oklch(60% 0.02 260);  /* gray   #7a7d85 */
+
+      --danger: oklch(65% 0.18 25);        /* mute red */
+
+      --font-display: "Inter", -apple-system, system-ui, sans-serif;
+      --font-body:    "Inter", -apple-system, system-ui, sans-serif;
+      --font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+
+      --radius-sm: 4px;
+      --radius-md: 6px;
+      --radius-lg: 12px;
+
+      /* Motion — brand: 150ms ease-out micro. Curves are the stronger variants. */
+      --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+      --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--fg);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font-family: inherit; }
+
+    /* ============================================================= *
+     *  APP SHELL — header / stage / transport
+     * ============================================================= */
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    /* ---- Header ------------------------------------------------- */
+    .app-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      z-index: 5;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--fg);
+      flex: 0 0 auto;
+    }
+    .logo svg { width: 24px; height: 24px; }
+    .logo span { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+
+    .track-info { flex: 1; text-align: center; min-width: 0; }
+    .track-info h1 {
+      font-size: 14px; font-weight: 500;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .track-info p {
+      font-size: 12px; font-family: var(--font-mono); color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .header-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+    /* ---- Buttons (brand) --------------------------------------- */
+    .btn {
+      height: 36px;
+      padding: 0 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      font-family: var(--font-body);
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: filter 150ms var(--ease-out),
+                  border-color 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  background 150ms var(--ease-out),
+                  transform 120ms var(--ease-out);
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn svg { width: 15px; height: 15px; }
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-primary:hover { filter: brightness(1.1); }
+    .btn-secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--accent); }
+    .btn-ghost { background: transparent; color: var(--muted); padding: 0 8px; }
+    .btn-ghost:hover { color: var(--fg); }
+    .btn:disabled { opacity: 0.4; pointer-events: none; }
+
+    /* Export exporting-state (rare action; deliberate <300ms swap). */
+    .btn .export-spinner {
+      width: 14px; height: 14px;
+      border: 2px solid color-mix(in oklch, var(--bg) 55%, transparent);
+      border-top-color: var(--bg);
+      border-radius: 50%;
+      display: none;
+      animation: spin 0.7s linear infinite; /* constant motion => linear */
+      flex: none;
+    }
+    .btn.is-exporting > svg           { display: none; }
+    .btn.is-exporting .export-spinner { display: inline-block; }
+    .btn .export-label { transition: opacity 150ms var(--ease-out); }
+    .btn.is-exporting { cursor: default; pointer-events: none; opacity: 0.85; }
+
+    /* Transient export error (header-anchored, brand danger tint). */
+    .export-msg {
+      position: absolute;
+      top: 56px; right: 24px;
+      padding: 8px 12px;
+      border-radius: var(--radius-md);
+      background: color-mix(in oklch, var(--danger) 12%, var(--surface));
+      border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+      color: color-mix(in oklch, var(--danger) 55%, var(--fg));
+      font-size: 12px; font-weight: 500;
+      max-width: 320px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      opacity: 0; transform: translateY(-4px);
+      pointer-events: none; z-index: 40;
+      transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out);
+    }
+    .export-msg.show { opacity: 1; transform: translateY(0); }
+
+    /* ---- Main stage -------------------------------------------- */
+    .app-main {
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      gap: 16px;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Waveform overview (full-mix summary) */
+    .waveform-overview {
+      height: 64px;
+      flex: 0 0 64px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      position: relative;
+      overflow: hidden;
+      cursor: pointer;
+    }
+    .waveform-overview canvas { display: block; width: 100%; height: 100%; }
+    .time-markers {
+      position: absolute;
+      bottom: 4px; left: 12px; right: 12px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    /* Stem tracks container */
+    .stem-tracks {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    /* Individual stem track card */
+    .stem-track {
+      display: grid;
+      grid-template-columns: 140px 1fr 200px;
+      gap: 16px;
+      align-items: center;
+      padding: 12px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      transition: border-color 150ms var(--ease-out),
+                  opacity 150ms var(--ease-out);
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .stem-track:hover { border-color: color-mix(in oklch, var(--border) 50%, var(--fg)); }
+    }
+    .stem-track.muted { opacity: 0.4; }
+    .stem-track.solo { border-color: var(--accent); }
+
+    /* Identity: color bar + name + filename */
+    .stem-identity { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .stem-color { width: 4px; height: 40px; border-radius: 2px; flex: 0 0 auto; }
+    .stem-meta { min-width: 0; }
+    .stem-meta h3 { font-size: 14px; font-weight: 500; margin-bottom: 2px; }
+    .stem-meta p {
+      font-size: 11px; font-family: var(--font-mono); color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* Waveform */
+    .stem-waveform {
+      height: 40px;
+      background: var(--bg);
+      border-radius: var(--radius-sm);
+      position: relative;
+      overflow: hidden;
+    }
+    .stem-waveform canvas { display: block; width: 100%; height: 100%; }
+    /* Per-track playhead line, moved via transform. */
+    .stem-waveform .playhead {
+      position: absolute;
+      top: 0; bottom: 0; left: 0;
+      width: 1px;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      transform: translateX(0);
+      will-change: transform;
+      pointer-events: none;
+    }
+
+    /* Controls: M/S + volume + dB */
+    .stem-controls { display: flex; align-items: center; gap: 12px; }
+    .control-buttons { display: flex; gap: 4px; flex: 0 0 auto; }
+    .ctrl-btn {
+      width: 28px; height: 28px;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 10px; font-weight: 600;
+      font-family: var(--font-mono);
+      cursor: pointer;
+      transition: color 150ms var(--ease-out),
+                  background 150ms var(--ease-out),
+                  border-color 150ms var(--ease-out),
+                  transform 110ms var(--ease-out);
+    }
+    .ctrl-btn:active { transform: scale(0.9); }
+    @media (hover: hover) and (pointer: fine) {
+      .ctrl-btn:hover { color: var(--fg); border-color: var(--fg); }
+    }
+    .ctrl-btn.solo.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    /* Mute active tints with the stem color (brand). Set via --stem-c per row. */
+    .ctrl-btn.mute.active { background: var(--stem-c); color: var(--bg); border-color: var(--stem-c); }
+
+    .volume-control { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+    .volume-slider {
+      flex: 1;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      position: relative;
+      cursor: pointer;
+      min-width: 48px;
+    }
+    .volume-fill {
+      position: absolute; left: 0; top: 0; height: 100%;
+      background: var(--stem-c);
+      border-radius: 2px;
+    }
+    .volume-handle {
+      position: absolute; top: 50%;
+      transform: translate(-50%, -50%);
+      width: 12px; height: 12px;
+      background: var(--fg);
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+      transition: transform 120ms var(--ease-out);
+    }
+    .volume-slider:active .volume-handle { transform: translate(-50%, -50%) scale(1.2); }
+    .volume-value {
+      font-size: 11px; font-family: var(--font-mono); color: var(--muted);
+      width: 52px; text-align: right; flex: 0 0 auto;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Transport bar ----------------------------------------- */
+    .transport-bar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 24px;
+      padding: 16px 24px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+    .transport-left { display: flex; align-items: center; gap: 16px; justify-self: start; }
+    .transport-time {
+      font-size: 20px;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      font-variant-numeric: tabular-nums;
+    }
+    .transport-time .current { color: var(--fg); }
+    .transport-time .separator { color: var(--muted); margin: 0 4px; }
+    .transport-time .total { color: var(--muted); }
+
+    .speed {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 2px;
+    }
+    .speed button {
+      border: none; background: none; color: var(--muted);
+      font-size: 12px; font-weight: 500; font-family: var(--font-mono);
+      padding: 4px 8px; border-radius: var(--radius-sm); cursor: pointer;
+      transition: color 150ms var(--ease-out), background 150ms var(--ease-out);
+    }
+    .speed button.on { background: var(--surface); color: var(--fg); }
+
+    .transport-controls { display: flex; align-items: center; gap: 8px; }
+    .transport-btn {
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  transform 110ms var(--ease-out);
+    }
+    @media (hover: hover) and (pointer: fine) {
+      .transport-btn:hover { border-color: var(--accent); }
+    }
+    .transport-btn:active { transform: scale(0.92); }
+    .transport-btn svg { width: 20px; height: 20px; }
+    .transport-btn.loop.on { color: var(--accent); border-color: var(--accent); }
+    .transport-btn.play {
+      width: 56px; height: 56px;
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+    }
+    .transport-btn.play:hover { filter: brightness(1.1); }
+    .transport-btn.play:active { transform: scale(0.95); }
+    .transport-btn.play svg { width: 24px; height: 24px; }
+
+    .transport-right { display: flex; align-items: center; gap: 12px; justify-self: end; }
+
+    /* ============================================================= *
+     *  UPLOAD / LOADING OVERLAY
+     * ============================================================= */
+    .overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(80vw 60vh at 50% 30%, color-mix(in oklch, var(--accent) 8%, transparent), transparent 70%),
+        var(--bg);
+      transition: opacity 300ms var(--ease-out);
+    }
+    .overlay.hidden { opacity: 0; pointer-events: none; }
+
+    .drop-card { width: 100%; max-width: 460px; text-align: center; }
+    .drop-logo {
+      display: inline-flex; align-items: center; gap: 10px;
+      color: var(--fg); margin-bottom: 24px;
+    }
+    .drop-logo svg { width: 32px; height: 32px; }
+    .drop-logo span { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+    .drop-title { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 8px; }
+    .drop-sub { color: var(--muted); font-size: 14px; margin-bottom: 28px; line-height: 1.5; }
+
+    #drop {
+      border: 1.5px dashed var(--border);
+      border-radius: var(--radius-lg);
+      padding: 48px 24px;
+      cursor: pointer;
+      background: var(--surface);
+      transition: border-color 150ms var(--ease-out),
+                  background 150ms var(--ease-out),
+                  transform 150ms var(--ease-out);
+    }
+    #drop.drag { border-color: var(--accent); background: color-mix(in oklch, var(--surface) 80%, var(--accent)); transform: scale(1.01); }
+    .drop-icon { width: 40px; height: 40px; margin: 0 auto 16px; color: var(--accent); }
+    #drop strong { display: block; font-size: 15px; font-weight: 500; margin-bottom: 6px; }
+    #drop p { color: var(--muted); font-size: 12px; font-family: var(--font-mono); }
+
+    .loading { display: none; flex-direction: column; align-items: center; gap: 20px; }
+    .loading.show { display: flex; }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite; /* constant motion => linear */
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 15px; font-weight: 500; }
+    .loading-sub { font-size: 13px; color: var(--muted); text-align: center; max-width: 360px; }
+    .loading-file { color: var(--accent); font-family: var(--font-mono); }
+
+    .err {
+      margin-top: 18px;
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      background: color-mix(in oklch, var(--danger) 10%, transparent);
+      border: 1px solid color-mix(in oklch, var(--danger) 35%, transparent);
+      color: color-mix(in oklch, var(--danger) 55%, var(--fg));
+      font-size: 13px;
+      display: none;
+    }
+    .err.show { display: block; }
+
+    /* ---- Responsive (brand mockup breakpoint) ------------------ */
+    @media (max-width: 768px) {
+      .app-main { padding: 16px; }
+      .stem-track {
+        grid-template-columns: 100px 1fr;
+        gap: 12px;
+      }
+      .stem-controls { grid-column: span 2; justify-content: space-between; }
+      .transport-bar { grid-template-columns: auto 1fr auto; gap: 12px; }
+      .transport-left .speed { display: none; }
+      .transport-time { font-size: 16px; }
+      .track-info { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #drop.drag { transform: none; }
+      .stem-track, .btn { transition: opacity 150ms ease, border-color 150ms ease; }
+      .btn.is-exporting .export-spinner { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <!-- ================= HEADER ================= -->
+    <header class="app-header">
+      <a class="logo" title="joda">
+        <!-- Layered-tracks mark (assets/logo-icon.svg) -->
+        <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+          <rect x="6" y="4" width="22" height="4" rx="1" opacity="1"/>
+          <rect x="2" y="10" width="26" height="4" rx="1" opacity="0.6"/>
+          <rect x="2" y="16" width="26" height="4" rx="1" opacity="0.4"/>
+          <rect x="2" y="22" width="26" height="4" rx="1" opacity="0.25"/>
+        </svg>
+        <span>joda</span>
+      </a>
+
+      <div class="track-info">
+        <h1 id="songTitle">joda</h1>
+        <p id="songMeta">stem separation</p>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn btn-ghost" id="newBtn" title="Load another song">
+          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          New
+        </button>
+      </div>
+    </header>
+
+    <!-- ================= MAIN ================= -->
+    <main class="app-main">
+      <!-- Waveform overview (full mix) -->
+      <div class="waveform-overview" id="overview">
+        <canvas id="overviewCanvas"></canvas>
+        <div class="playhead" id="overviewPlayhead" style="position:absolute;top:0;bottom:0;left:0;width:2px;background:var(--accent);box-shadow:0 0 8px var(--accent);transform:translateX(0);will-change:transform;pointer-events:none;"></div>
+        <div class="time-markers" id="timeMarkers"></div>
+      </div>
+
+      <!-- Stem track cards -->
+      <div class="stem-tracks" id="tracks"></div>
+    </main>
+
+    <!-- ================= TRANSPORT ================= -->
+    <footer class="transport-bar">
+      <div class="transport-left">
+        <div class="transport-time">
+          <span class="current" id="cur">0:00</span>
+          <span class="separator">/</span>
+          <span class="total" id="dur">0:00</span>
+        </div>
+        <div class="speed" id="speed">
+          <button data-rate="0.5">0.5x</button>
+          <button data-rate="1" class="on">1x</button>
+          <button data-rate="2">2x</button>
+        </div>
+      </div>
+
+      <div class="transport-controls">
+        <button class="transport-btn" id="backSkip" title="Back 10s" aria-label="Back 10 seconds">
+          <svg fill="currentColor" viewBox="0 0 24 24"><path d="M11 6V2L5 8l6 6V10a5 5 0 1 1-5 5H4a7 7 0 1 0 7-9z"/></svg>
+        </button>
+        <button class="transport-btn play" id="playBtn" title="Play/Pause" aria-label="Play">
+          <svg id="playIcon" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button class="transport-btn" id="fwdSkip" title="Forward 10s" aria-label="Forward 10 seconds">
+          <svg fill="currentColor" viewBox="0 0 24 24"><path d="M13 6V2l6 6-6 6v-4a5 5 0 1 0 5 5h2a7 7 0 1 1-7-9z"/></svg>
+        </button>
+        <button class="transport-btn loop" id="loopBtn" title="Loop" aria-label="Loop">
+          <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+        </button>
+      </div>
+
+      <div class="transport-right">
+        <button class="btn btn-ghost" id="resetBtn" title="Reset all stems">Reset</button>
+        <button class="btn btn-primary" id="exportBtn" aria-label="Export current mix as WAV">
+          <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          <span class="export-spinner" aria-hidden="true"></span>
+          <span class="export-label">Export</span>
+        </button>
+      </div>
+    </footer>
+
+    <div class="export-msg" id="exportMsg" role="status" aria-live="polite"></div>
+  </div>
+
+  <!-- ================= UPLOAD / LOADING OVERLAY ================= -->
+  <div class="overlay" id="overlay">
+    <div class="drop-card">
+      <div class="loading" id="loading">
+        <div class="spinner"></div>
+        <div class="loading-text">Separating stems</div>
+        <div class="loading-sub">
+          Splitting <span class="loading-file" id="loadingFile"></span> into six parts.
+          Runs on CPU — this can take a couple of minutes. Keep this tab open.
+        </div>
+      </div>
+
+      <div id="dropWrap">
+        <div class="drop-logo">
+          <svg viewBox="0 0 32 32" fill="currentColor" aria-hidden="true">
+            <rect x="6" y="4" width="22" height="4" rx="1" opacity="1"/>
+            <rect x="2" y="10" width="26" height="4" rx="1" opacity="0.6"/>
+            <rect x="2" y="16" width="26" height="4" rx="1" opacity="0.4"/>
+            <rect x="2" y="22" width="26" height="4" rx="1" opacity="0.25"/>
+          </svg>
+          <span>joda</span>
+        </div>
+        <h1 class="drop-title">Separate any track</h1>
+        <p class="drop-sub">Isolate vocals, drums, bass, guitar, piano, and more — then mix each part live and export the result.</p>
+        <div id="drop">
+          <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M12 3v13"/><path d="M7 8l5-5 5 5"/></svg>
+          <strong>Drop an audio file, or click to browse</strong>
+          <p>mp3 · wav · flac · ogg · m4a</p>
+          <input type="file" id="file" accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a" hidden />
+        </div>
+        <div class="err" id="err"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------
+    //  Stem metadata. Order = track order (top→bottom), matching the joda
+    //  brand + backend STEMS order: vocals, drums, bass, guitar, piano, other.
+    //  Each stem carries its brand color (hex, for canvas) + the CSS var name.
+    // ------------------------------------------------------------------
+    const STEM_META = {
+      vocals: { label: "Vocals", color: "#e07b6b", varName: "--stem-vocals" },
+      drums:  { label: "Drums",  color: "#d4a84d", varName: "--stem-drums"  },
+      bass:   { label: "Bass",   color: "#9b7ec7", varName: "--stem-bass"   },
+      guitar: { label: "Guitar", color: "#6ba86b", varName: "--stem-guitar" },
+      piano:  { label: "Piano",  color: "#6b9dd4", varName: "--stem-piano"  },
+      other:  { label: "Other",  color: "#7a7d85", varName: "--stem-other"  },
+    };
+    const ORDER = Object.keys(STEM_META);
+
+    // ---- DOM refs -----------------------------------------------------
+    const $ = id => document.getElementById(id);
+    const overlay = $("overlay"), dropWrap = $("dropWrap"), loading = $("loading"),
+          loadingFile = $("loadingFile"), errEl = $("err"),
+          drop = $("drop"), fileInput = $("file"),
+          tracksEl = $("tracks"),
+          overviewEl = $("overview"), overviewCanvas = $("overviewCanvas"),
+          overviewPlayhead = $("overviewPlayhead"), timeMarkersEl = $("timeMarkers"),
+          playBtn = $("playBtn"), playIcon = $("playIcon"),
+          curEl = $("cur"), durEl = $("dur"),
+          songTitle = $("songTitle"), songMeta = $("songMeta"),
+          loopBtn = $("loopBtn"), resetBtn = $("resetBtn"),
+          newBtn = $("newBtn"), backSkip = $("backSkip"), fwdSkip = $("fwdSkip"),
+          speedEl = $("speed"), exportBtn = $("exportBtn");
+
+    const PLAY_PATH  = "M8 5v14l11-7z";
+    const PAUSE_PATH = "M6 5h4v14H6zM14 5h4v14h-4z";
+
+    function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+    function fmt(s) {
+      s = Math.max(0, Math.floor(s));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+    // Linear volume (0..1) -> dB label. 1 => 0.0 dB, 0 => −∞ dB.
+    function gainToDb(v) {
+      if (v <= 0) return "−∞ dB";
+      const db = 20 * Math.log10(v);
+      return `${db >= 0 ? "" : ""}${db.toFixed(1)} dB`;
+    }
+
+    // ------------------------------------------------------------------
+    //  Upload wiring
+    // ------------------------------------------------------------------
+    drop.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => { if (fileInput.files.length) upload(fileInput.files[0]); });
+    ["dragenter", "dragover"].forEach(ev =>
+      drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+    ["dragleave", "drop"].forEach(ev =>
+      drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+    drop.addEventListener("drop", e => { if (e.dataTransfer.files.length) upload(e.dataTransfer.files[0]); });
+
+    newBtn.addEventListener("click", () => {
+      mixer.stop();
+      overlay.classList.remove("hidden");
+      loading.classList.remove("show");
+      dropWrap.style.display = "";
+      fileInput.value = "";
+    });
+
+    function showError(msg) {
+      errEl.textContent = "⚠ " + msg;
+      errEl.classList.add("show");
+      loading.classList.remove("show");
+      dropWrap.style.display = "";
+    }
+
+    async function upload(file) {
+      errEl.classList.remove("show");
+      dropWrap.style.display = "none";
+      loadingFile.textContent = file.name;
+      loading.classList.add("show");
+
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const res = await fetch("/api/separate", { method: "POST", body });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Separation failed.");
+        const name = data.original_name || "Untitled";
+        songTitle.textContent = name;
+        await mixer.load(data.stems, name);
+        overlay.classList.add("hidden");
+      } catch (err) {
+        showError(err.message);
+      }
+    }
+
+    // ==================================================================
+    //  StemMixer — Web Audio multitrack player + waveform renderer.
+    //
+    //  All stems share ONE AudioContext clock; every source starts at the
+    //  same currentTime so they're sample-locked. Mute/solo/volume use
+    //  per-stem GainNodes without stopping sources, so toggling never
+    //  breaks sync. Seeking recreates sources at a new buffer offset.
+    //
+    //  (Audio engine unchanged from the verified build — only the DOM it
+    //   builds, and the stem coloring, changed for the joda brand layout.)
+    // ==================================================================
+    const mixer = (() => {
+      let ctx = null, master = null;
+      const stems = {};          // name -> { buffer, gain, on, volume, meta, canvas, cardEl, waveEl, playheadEl, mBtn, sBtn, fillEl, handleEl, dbEl, source }
+      let names = [];
+      let duration = 0;
+      let playing = false;
+      let startedAt = 0;         // ctx time at (re)start
+      let offset = 0;            // buffer offset playback started from
+      let rate = 1;
+      let soloed = null;
+      let looping = false;
+      let rafId = null;
+      let laneWidth = 0;
+      let trackName = "";
+
+      async function load(stemUrls, name) {
+        stop();
+        clear(tracksEl);
+        for (const k of Object.keys(stems)) delete stems[k];
+        trackName = name || "";
+
+        ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+        master = ctx.createGain();
+        master.connect(ctx.destination);
+
+        names = Object.keys(stemUrls).sort((a, b) => {
+          const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+          return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        });
+
+        const buffers = await Promise.all(names.map(async name => {
+          const res = await fetch(stemUrls[name]);
+          if (!res.ok) throw new Error(`Failed to fetch ${name} stem`);
+          return ctx.decodeAudioData(await res.arrayBuffer());
+        }));
+
+        duration = 0;
+        names.forEach((name, i) => {
+          const buf = buffers[i];
+          duration = Math.max(duration, buf.duration);
+          const gain = ctx.createGain();
+          gain.connect(master);
+          const meta = STEM_META[name] || { label: name, color: "#7a7d85", varName: "--stem-other" };
+          stems[name] = { buffer: buf, gain, on: true, volume: 1, meta, source: null };
+          buildTrack(name);
+        });
+
+        offset = 0; playing = false;
+        durEl.textContent = fmt(duration);
+        curEl.textContent = "0:00";
+        // Header metadata (mono): filename · mm:ss · 44.1 kHz-style
+        const sr = ctx.sampleRate ? `${(ctx.sampleRate / 1000).toFixed(1)} kHz` : "";
+        songMeta.textContent = [trackName, fmt(duration), sr].filter(Boolean).join(" · ");
+        setPlayIcon(false);
+        renderTimeMarkers();
+        requestAnimationFrame(() => { measure(); drawAll(); drawOverview(); movePlayhead(0); });
+      }
+
+      // ---- Build one horizontal stem-track card (brand layout) --------
+      function buildTrack(name) {
+        const s = stems[name];
+        const card = document.createElement("div");
+        card.className = "stem-track";
+        card.dataset.stem = name;
+        card.style.setProperty("--stem-c", `var(${s.meta.varName})`);
+
+        // identity
+        const identity = document.createElement("div");
+        identity.className = "stem-identity";
+        const color = document.createElement("div");
+        color.className = "stem-color";
+        color.style.background = `var(${s.meta.varName})`;
+        const metaWrap = document.createElement("div");
+        metaWrap.className = "stem-meta";
+        const h3 = document.createElement("h3"); h3.textContent = s.meta.label;
+        const fileP = document.createElement("p"); fileP.textContent = `${name}.wav`;
+        metaWrap.append(h3, fileP);
+        identity.append(color, metaWrap);
+
+        // waveform
+        const wave = document.createElement("div");
+        wave.className = "stem-waveform";
+        const canvas = document.createElement("canvas");
+        const ph = document.createElement("div");
+        ph.className = "playhead";
+        wave.append(canvas, ph);
+
+        // controls: M/S + volume + dB
+        const controls = document.createElement("div");
+        controls.className = "stem-controls";
+        const btns = document.createElement("div");
+        btns.className = "control-buttons";
+        const m = document.createElement("button");
+        m.className = "ctrl-btn mute"; m.textContent = "M"; m.title = "Mute";
+        const so = document.createElement("button");
+        so.className = "ctrl-btn solo"; so.textContent = "S"; so.title = "Solo";
+        m.addEventListener("click", () => setOn(name, s.on));
+        so.addEventListener("click", () => toggleSolo(name));
+        btns.append(m, so);
+
+        const vol = document.createElement("div");
+        vol.className = "volume-control";
+        const slider = document.createElement("div");
+        slider.className = "volume-slider";
+        const fill = document.createElement("div");
+        fill.className = "volume-fill"; fill.style.width = "100%";
+        const handle = document.createElement("div");
+        handle.className = "volume-handle"; handle.style.left = "100%";
+        slider.append(fill, handle);
+        const dbEl = document.createElement("span");
+        dbEl.className = "volume-value"; dbEl.textContent = "0.0 dB";
+        vol.append(slider, dbEl);
+
+        // Drag-to-set volume on the slider (pointer-based, no native input).
+        attachVolumeDrag(name, slider);
+
+        controls.append(btns, vol);
+        card.append(identity, wave, controls);
+        tracksEl.appendChild(card);
+
+        Object.assign(s, {
+          cardEl: card, waveEl: wave, canvas, playheadEl: ph,
+          mBtn: m, sBtn: so, fillEl: fill, handleEl: handle, dbEl,
+        });
+      }
+
+      // Pointer-driven volume slider (replaces the native range input, so
+      // it matches the brand fill+handle visual). Sets volume 0..1.
+      function attachVolumeDrag(name, slider) {
+        const apply = (clientX) => {
+          const r = slider.getBoundingClientRect();
+          const v = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+          setVolume(name, v);
+        };
+        let dragging = false;
+        slider.addEventListener("pointerdown", e => {
+          dragging = true;
+          apply(e.clientX);                                    // set value first — never gated by capture
+          try { slider.setPointerCapture(e.pointerId); } catch {} // capture is best-effort
+        });
+        slider.addEventListener("pointermove", e => { if (dragging) apply(e.clientX); });
+        slider.addEventListener("pointerup",   e => { dragging = false; try { slider.releasePointerCapture(e.pointerId); } catch {} });
+        slider.addEventListener("pointercancel", () => { dragging = false; });
+      }
+
+      function measure() { laneWidth = tracksEl.clientWidth ? (stems[names[0]]?.waveEl.clientWidth || 0) : 0; }
+
+      // ---- Waveform peak extraction + draw ----------------------------
+      function computePeaks(buffer, width) {
+        const chs = buffer.numberOfChannels;
+        const len = buffer.length;
+        const step = Math.max(1, Math.floor(len / width));
+        const peaks = new Float32Array(width * 2);
+        const data = [];
+        for (let c = 0; c < chs; c++) data.push(buffer.getChannelData(c));
+        for (let x = 0; x < width; x++) {
+          let min = 1, max = -1;
+          const start = x * step, end = Math.min(len, start + step);
+          for (let i = start; i < end; i++) {
+            let v = 0;
+            for (let c = 0; c < chs; c++) v += data[c][i];
+            v /= chs;
+            if (v < min) min = v;
+            if (v > max) max = v;
+          }
+          peaks[x * 2] = min;
+          peaks[x * 2 + 1] = max;
+        }
+        return peaks;
+      }
+
+      function drawLane(name) {
+        const s = stems[name];
+        const wrap = s.waveEl, canvas = s.canvas;
+        const w = wrap.clientWidth, h = wrap.clientHeight;
+        if (!w || !h) return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        const g = canvas.getContext("2d");
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.clearRect(0, 0, w, h);
+
+        const peaks = computePeaks(s.buffer, w);
+        const mid = h / 2;
+        const amp = h * 0.46;
+        // Brand: fill the waveform in the stem's assigned color.
+        g.fillStyle = s.meta.color;
+        g.beginPath();
+        for (let x = 0; x < w; x++) {
+          const y = mid - peaks[x * 2 + 1] * amp;
+          x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+        }
+        for (let x = w - 1; x >= 0; x--) {
+          const y = mid - peaks[x * 2] * amp;
+          g.lineTo(x, y);
+        }
+        g.closePath();
+        g.fill();
+      }
+
+      function drawAll() { names.forEach(drawLane); }
+
+      // ---- Waveform overview: summed full-mix, drawn in --muted -------
+      function drawOverview() {
+        const w = overviewEl.clientWidth, h = overviewEl.clientHeight;
+        if (!w || !h || !names.length) return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        overviewCanvas.width = w * dpr; overviewCanvas.height = h * dpr;
+        const g = overviewCanvas.getContext("2d");
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.clearRect(0, 0, w, h);
+
+        // Sum per-column peaks across all stems for a full-mix silhouette.
+        const perStem = names.map(n => computePeaks(stems[n].buffer, w));
+        const mid = h / 2;
+        const amp = h * 0.42;
+        g.fillStyle = "rgba(122,125,133,0.55)"; // --muted-ish
+        g.beginPath();
+        for (let x = 0; x < w; x++) {
+          let mx = 0;
+          for (const p of perStem) mx = Math.max(mx, p[x * 2 + 1]);
+          g.lineTo(x, mid - Math.min(1, mx) * amp);
+        }
+        for (let x = w - 1; x >= 0; x--) {
+          let mn = 0;
+          for (const p of perStem) mn = Math.min(mn, p[x * 2]);
+          g.lineTo(x, mid - Math.max(-1, mn) * amp);
+        }
+        g.closePath();
+        g.fill();
+      }
+
+      // ---- Time markers on the overview strip -------------------------
+      function renderTimeMarkers() {
+        clear(timeMarkersEl);
+        if (!duration) return;
+        const n = 5;
+        for (let i = 0; i < n; i++) {
+          const span = document.createElement("span");
+          span.textContent = fmt((duration * i) / (n - 1));
+          timeMarkersEl.appendChild(span);
+        }
+      }
+
+      // ---- Gain application (single source of truth for audibility) ----
+      function applyGains() {
+        const t = ctx ? ctx.currentTime : 0;
+        for (const name of names) {
+          const s = stems[name];
+          const audible = s.on && (soloed === null || soloed === name);
+          s.gain.gain.setTargetAtTime(audible ? s.volume : 0, t, 0.01); // 10ms ramp, click-free
+          s.cardEl.classList.toggle("muted", !audible);
+          s.cardEl.classList.toggle("solo", soloed === name);
+          s.mBtn.classList.toggle("active", !s.on);
+          s.sBtn.classList.toggle("active", soloed === name);
+        }
+      }
+
+      function setOn(name, currentlyOn) { stems[name].on = !currentlyOn; applyGains(); }
+      function setVolume(name, v) {
+        const s = stems[name];
+        s.volume = v;
+        s.fillEl.style.width = (v * 100) + "%";
+        s.handleEl.style.left = (v * 100) + "%";
+        s.dbEl.textContent = gainToDb(v);
+        applyGains();
+      }
+      function toggleSolo(name) { soloed = (soloed === name) ? null : name; applyGains(); }
+      function reset() {
+        soloed = null;
+        for (const n of names) { setVolumeSilent(n, 1); stems[n].on = true; }
+        applyGains();
+      }
+      // Set volume + UI without re-applying gains (reset batches one applyGains).
+      function setVolumeSilent(name, v) {
+        const s = stems[name];
+        s.volume = v;
+        s.fillEl.style.width = (v * 100) + "%";
+        s.handleEl.style.left = (v * 100) + "%";
+        s.dbEl.textContent = gainToDb(v);
+      }
+
+      // ---- Transport ---------------------------------------------------
+      function startSources(fromOffset) {
+        offset = Math.max(0, Math.min(fromOffset, duration));
+        const when = ctx.currentTime;
+        startedAt = when;
+        for (const name of names) {
+          const s = stems[name];
+          const src = ctx.createBufferSource();
+          src.buffer = s.buffer;
+          src.playbackRate.value = rate;
+          src.connect(s.gain);
+          src.start(when, offset);
+          s.source = src;
+        }
+        stems[names[0]].source.onended = () => {
+          if (playing && (ctx.currentTime - startedAt) * rate + offset >= duration - 0.05) {
+            if (looping) { stopSources(); startSources(0); }
+            else stop();
+          }
+        };
+        applyGains();
+      }
+      function stopSources() {
+        for (const name of names) {
+          const s = stems[name];
+          if (s.source) { try { s.source.onended = null; s.source.stop(); } catch {} s.source = null; }
+        }
+      }
+      async function play() {
+        if (!ctx || playing) return;
+        if (ctx.state === "suspended") await ctx.resume();
+        startSources(offset);
+        playing = true; setPlayIcon(true); tick();
+      }
+      function pause() {
+        if (!playing) return;
+        offset += (ctx.currentTime - startedAt) * rate;
+        stopSources(); playing = false; setPlayIcon(false);
+        cancelAnimationFrame(rafId);
+      }
+      function stop() {
+        stopSources(); playing = false; offset = 0;
+        setPlayIcon(false); cancelAnimationFrame(rafId);
+        curEl && (curEl.textContent = "0:00");
+        movePlayhead(0);
+      }
+      function togglePlay() { playing ? pause() : play(); }
+      function setRate(r) {
+        rate = r;
+        if (playing) { const at = currentTime(); stopSources(); startSources(at); }
+      }
+      function skip(delta) { seekTo(currentTime() + delta); }
+      function seekFraction(f) { seekTo(f * duration); }
+      function seekTo(target) {
+        target = Math.max(0, Math.min(target, duration));
+        if (playing) { stopSources(); startSources(target); }
+        else { offset = target; }
+        curEl.textContent = fmt(target);
+        movePlayhead(target);
+      }
+      function toggleLoop() { looping = !looping; loopBtn.classList.toggle("on", looping); }
+
+      function currentTime() {
+        if (!ctx) return 0;
+        return playing ? Math.min(offset + (ctx.currentTime - startedAt) * rate, duration) : offset;
+      }
+      function setPlayIcon(isPlaying) {
+        playIcon.querySelector("path").setAttribute("d", isPlaying ? PAUSE_PATH : PLAY_PATH);
+        playBtn.setAttribute("aria-label", isPlaying ? "Pause" : "Play");
+      }
+
+      // Playhead: constant motion => transform (GPU), linear feel. One shared
+      // fraction drives the overview (full width) + every per-track line.
+      function movePlayhead(t) {
+        const f = duration ? t / duration : 0;
+        const ow = overviewEl.clientWidth || 0;
+        overviewPlayhead.style.transform = `translateX(${f * ow}px)`;
+        const lw = laneWidth || (stems[names[0]]?.waveEl.clientWidth || 0);
+        const x = f * lw;
+        for (const name of names) {
+          if (stems[name].playheadEl) stems[name].playheadEl.style.transform = `translateX(${x}px)`;
+        }
+      }
+      function tick() {
+        const t = currentTime();
+        curEl.textContent = fmt(t);
+        movePlayhead(t);
+        if (playing) rafId = requestAnimationFrame(tick);
+      }
+
+      function relayout() {
+        if (!names.length) return;
+        measure(); drawAll(); drawOverview(); renderTimeMarkers(); movePlayhead(currentTime());
+      }
+
+      // ---- Export: bounce the CURRENT MIX to a WAV (offline, 1x) ----------
+      // renderMix() replicates the LIVE audibility rule (on / soloed / volume)
+      // exactly, ignores the transport `rate`, and renders every stem locked
+      // at t=0 into a throwaway OfflineAudioContext. Pure — no live-graph edits.
+      async function renderMix() {
+        if (!names.length || duration <= 0) throw new Error("Nothing to export");
+        const sampleRate = ctx ? ctx.sampleRate : stems[names[0]].buffer.sampleRate;
+        let numberOfChannels = 1;
+        for (const name of names) {
+          numberOfChannels = Math.max(numberOfChannels, stems[name].buffer.numberOfChannels);
+        }
+        const length = Math.max(1, Math.ceil(duration * sampleRate));
+        const octx = new OfflineAudioContext(numberOfChannels, length, sampleRate);
+        const soloSnapshot = soloed;
+        for (const name of names) {
+          const s = stems[name];
+          const audible = s.on && (soloSnapshot === null || soloSnapshot === name);
+          const gainValue = audible ? s.volume : 0;
+          const source = octx.createBufferSource();
+          source.buffer = s.buffer;
+          const g = octx.createGain();
+          g.gain.value = gainValue; // constant — the 10ms live ramp is declick-only
+          source.connect(g);
+          g.connect(octx.destination);
+          source.start(0);
+        }
+        return octx.startRendering();
+      }
+
+      // encodeWav(): rendered AudioBuffer -> 16-bit PCM (LE) canonical RIFF/WAVE Blob.
+      // NOTE: synchronous interleave; briefly blocks the main thread (~250ms for a
+      // 2min stereo song). Fine for a rare action; a Web Worker is the clean upgrade.
+      function encodeWav(audioBuffer) {
+        const numChannels    = audioBuffer.numberOfChannels;
+        const sampleRate     = audioBuffer.sampleRate;
+        const frames         = audioBuffer.length;
+        const bytesPerSample = 2;
+        const bitsPerSample  = 16;
+        const audioFormat    = 1; // PCM
+        const blockAlign = numChannels * bytesPerSample;
+        const byteRate   = sampleRate * blockAlign;
+        const dataLength = frames * numChannels * bytesPerSample;
+        const bufferSize = 44 + dataLength;
+        const arrayBuffer = new ArrayBuffer(bufferSize);
+        const view = new DataView(arrayBuffer);
+        function writeString(offset, str) {
+          for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+        }
+        writeString(0, "RIFF");
+        view.setUint32(4, 36 + dataLength, true);
+        writeString(8, "WAVE");
+        writeString(12, "fmt ");                 // trailing space is significant
+        view.setUint32(16, 16, true);            // PCM fmt chunk size
+        view.setUint16(20, audioFormat, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitsPerSample, true);
+        writeString(36, "data");
+        view.setUint32(40, dataLength, true);
+        const channels = [];
+        for (let c = 0; c < numChannels; c++) channels.push(audioBuffer.getChannelData(c));
+        let offset = 44;
+        for (let i = 0; i < frames; i++) {
+          for (let c = 0; c < numChannels; c++) {
+            // Clamp FIRST (guards over-unity summed gains), then asymmetric scale:
+            // -1.0 -> -32768, +1.0 -> +32767 (avoids the +32768 wrap-to-negative pop).
+            let sample = channels[c][i];
+            if (sample > 1) sample = 1;
+            else if (sample < -1) sample = -1;
+            const int16 = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            view.setInt16(offset, int16, true); // little-endian
+            offset += 2;
+          }
+        }
+        return new Blob([arrayBuffer], { type: "audio/wav" });
+      }
+
+      async function exportMix() {
+        if (!names.length) throw new Error("No stems loaded.");
+        const rendered = await renderMix();
+        const blob = encodeWav(rendered);
+        return { blob, sampleRate: rendered.sampleRate };
+      }
+
+      return {
+        load, play, pause, stop, togglePlay, toggleLoop, reset, setRate, skip,
+        seekFraction, relayout, exportMix,
+        get duration() { return duration; },
+        get ready() { return names.length > 0; },
+      };
+    })();
+
+    // ------------------------------------------------------------------
+    //  Wiring
+    // ------------------------------------------------------------------
+    playBtn.addEventListener("click", () => mixer.togglePlay());
+    loopBtn.addEventListener("click", () => mixer.toggleLoop());
+    resetBtn.addEventListener("click", () => mixer.reset());
+    backSkip.addEventListener("click", () => mixer.skip(-10));
+    fwdSkip.addEventListener("click", () => mixer.skip(10));
+
+    speedEl.addEventListener("click", e => {
+      const btn = e.target.closest("button[data-rate]");
+      if (!btn) return;
+      [...speedEl.children].forEach(b => b.classList.remove("on"));
+      btn.classList.add("on");
+      mixer.setRate(parseFloat(btn.dataset.rate));
+    });
+
+    // Click-to-seek on the overview strip.
+    overviewEl.addEventListener("click", e => {
+      if (!mixer.ready) return;
+      const rect = overviewEl.getBoundingClientRect();
+      const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      mixer.seekFraction(f);
+    });
+
+    // ---- Export: bounce the current mix to a WAV download --------------
+    let exporting = false; // reentrancy latch
+    const exportLabel = exportBtn.querySelector(".export-label"); // may be null
+    const exportMsg   = document.getElementById("exportMsg");     // may be null
+    let   exportMsgTimer = null;
+
+    function setExporting(isExporting) {
+      exporting = isExporting;
+      exportBtn.classList.toggle("is-exporting", isExporting);
+      exportBtn.disabled = isExporting;
+      exportBtn.setAttribute("aria-busy", isExporting ? "true" : "false");
+      if (exportLabel) exportLabel.textContent = isExporting ? "Exporting…" : "Export";
+    }
+
+    function showExportError(message) {
+      if (!exportMsg) { console.error("Export failed:", message); exportBtn.title = message; return; }
+      exportMsg.textContent = "⚠ " + message;
+      exportMsg.classList.add("show");
+      clearTimeout(exportMsgTimer);
+      exportMsgTimer = setTimeout(() => exportMsg.classList.remove("show"), 3200);
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.rel = "noopener";
+      document.body.appendChild(a); // Firefox needs the anchor in the DOM
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0); // deferred revoke
+    }
+
+    // "My Song.mp3" -> "My Song (mix).wav"; "" / default -> "mix.wav".
+    function exportFilename(rawTitle) {
+      let base = (rawTitle || "").trim();
+      base = base.replace(/\.(mp3|wav|flac|m4a|ogg|oga|aac|wma|aiff|aif)$/i, "");
+      base = base.replace(/[\/\\?%*:|"<>\x00-\x1F]/g, "-");
+      base = base.replace(/\s+/g, " ").replace(/-{2,}/g, "-");
+      base = base.replace(/\s*-\s*/g, m => (/\s/.test(m) ? " " : "-"));
+      base = base.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
+      if (base.length > 120) base = base.slice(0, 120).trim();
+      if (!base || /^joda$/i.test(base) || /^untitled$/i.test(base)) return "mix.wav";
+      return base + " (mix).wav";
+    }
+
+    exportBtn.addEventListener("click", async () => {
+      if (!mixer.ready || exporting) return; // pre-load or already exporting => no-op
+      setExporting(true);
+      try {
+        const { blob } = await mixer.exportMix();
+        triggerDownload(blob, exportFilename(songTitle.textContent));
+      } catch (err) {
+        showExportError(err && err.message ? err.message : "Export failed.");
+      } finally {
+        setExporting(false); // always restore, success or failure
+      }
+    });
+
+    // Spacebar = play/pause (studio visible, not typing). No animation on toggle.
+    document.addEventListener("keydown", e => {
+      if (e.code === "Space" && e.target.tagName !== "INPUT" && overlay.classList.contains("hidden")) {
+        e.preventDefault();
+        mixer.togglePlay();
+      }
+    });
+
+    // Keep waveforms + playhead correct on resize.
+    let resizeRaf = null;
+    window.addEventListener("resize", () => {
+      cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => mixer.relayout());
+    });
+  </script>
+</body>
+</html>

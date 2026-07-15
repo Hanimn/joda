@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor">
+  <!-- Layered tracks icon - standalone -->
+  <g>
+    <!-- Track 1 - offset/accent (separated) -->
+    <rect x="6" y="4" width="22" height="4" rx="1" opacity="1"/>
+    <!-- Track 2 -->
+    <rect x="2" y="10" width="26" height="4" rx="1" opacity="0.6"/>
+    <!-- Track 3 -->
+    <rect x="2" y="16" width="26" height="4" rx="1" opacity="0.4"/>
+    <!-- Track 4 -->
+    <rect x="2" y="22" width="26" height="4" rx="1" opacity="0.25"/>
+  </g>
+</svg>

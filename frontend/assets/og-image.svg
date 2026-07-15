@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <!-- Open Graph / Twitter Social Preview (1200×630) -->
+  <defs>
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1c21"/>
+      <stop offset="100%" style="stop-color:#24262d"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="630" fill="url(#bg-gradient)"/>
+
+  <!-- Decorative stem tracks in background -->
+  <g opacity="0.08">
+    <rect x="-50" y="80" width="400" height="20" rx="4" fill="#f0f0f0"/>
+    <rect x="-100" y="120" width="500" height="20" rx="4" fill="#f0f0f0"/>
+    <rect x="-30" y="160" width="350" height="20" rx="4" fill="#f0f0f0"/>
+    <rect x="850" y="420" width="400" height="20" rx="4" fill="#f0f0f0"/>
+    <rect x="800" y="460" width="500" height="20" rx="4" fill="#f0f0f0"/>
+    <rect x="900" y="500" width="350" height="20" rx="4" fill="#f0f0f0"/>
+  </g>
+
+  <!-- Main content -->
+  <g transform="translate(100, 180)">
+    <!-- Logo icon -->
+    <g fill="#f0f0f0">
+      <rect x="8" y="0" width="64" height="12" rx="3"/>
+      <rect x="0" y="20" width="80" height="12" rx="3" opacity="0.6"/>
+      <rect x="0" y="40" width="80" height="12" rx="3" opacity="0.4"/>
+      <rect x="0" y="60" width="80" height="12" rx="3" opacity="0.25"/>
+    </g>
+
+    <!-- Logo text -->
+    <text x="110" y="58" font-family="Inter, -apple-system, system-ui, sans-serif" font-size="72" font-weight="600" fill="#f0f0f0" letter-spacing="-0.02em">joda</text>
+  </g>
+
+  <!-- Tagline -->
+  <text x="100" y="340" font-family="Inter, -apple-system, system-ui, sans-serif" font-size="28" fill="#7a7d85">Separate vocals, drums, bass, guitar, piano</text>
+
+  <!-- Stem color indicators -->
+  <g transform="translate(100, 380)">
+    <rect x="0" y="0" width="60" height="6" rx="3" fill="#e07b6b"/>
+    <rect x="80" y="0" width="60" height="6" rx="3" fill="#d4a84d"/>
+    <rect x="160" y="0" width="60" height="6" rx="3" fill="#9b7ec7"/>
+    <rect x="240" y="0" width="60" height="6" rx="3" fill="#6ba86b"/>
+    <rect x="320" y="0" width="60" height="6" rx="3" fill="#6b9dd4"/>
+    <rect x="400" y="0" width="60" height="6" rx="3" fill="#7a7d85"/>
+  </g>
+
+  <!-- URL hint -->
+  <text x="100" y="560" font-family="JetBrains Mono, ui-monospace, monospace" font-size="16" fill="#7a7d85">joda.audio</text>
+
+  <!-- Accent element -->
+  <rect x="1100" y="0" width="100" height="630" fill="#2dd4bf" opacity="0.15"/>
+</svg>
