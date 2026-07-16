@@ -25,7 +25,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # --- Bake the htdemucs_6s weights into the image ----------------------------
 # Pre-download so the first real separation doesn't stall on a 80MB+ fetch.
-RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
+# Ensure the cache dir exists first so the later chown target is guaranteed.
+RUN mkdir -p /opt/torch \
+    && python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
 
 # --- App code ---------------------------------------------------------------
 COPY backend/ backend/
