@@ -29,8 +29,17 @@ out to a WAV at any time.
 
 ```
 frontend/index.html   Single-page studio UI: drag-drop upload + Web Audio stem mixer + WAV export
-backend/app.py        FastAPI: upload -> demucs subprocess -> serve stem WAVs
+backend/app.py         FastAPI: validate upload -> enqueue job -> poll status -> serve stem WAVs
+backend/worker.py      RQ task: runs demucs in a separate process, reports live progress
+backend/queue.py       Shared Redis connection + RQ queue
+backend/config.py      Env-driven settings (JODA_* / .env)
+backend/cleanup.py     TTL sweeper for old uploads + stems
 ```
+
+Separation runs **asynchronously**: the upload endpoint enqueues a job and
+returns immediately, a worker process runs Demucs off a Redis queue, and the
+browser polls for progress. This keeps the web server responsive and lets you
+scale throughput by running more workers (on GPU boxes for a large speedup).
 
 > **Note on guitar:** `htdemucs_6s` emits a single `guitar` stem. Splitting a guitar track into
 > *lead* vs. *rhythm* is a musical role, not an instrument class — no open-source (or current
@@ -38,24 +47,58 @@ backend/app.py        FastAPI: upload -> demucs subprocess -> serve stem WAVs
 
 ## Setup
 
-Requires **Python 3.12** and **ffmpeg** on your `PATH` (Demucs uses it to decode mp3/m4a/etc).
+Requires **Python 3.12**, **ffmpeg**, and **Redis** on your machine (Demucs uses
+ffmpeg to decode mp3/m4a/etc; Redis backs the job queue).
 
 ```bash
+# macOS: brew install ffmpeg redis && brew services start redis
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
 ## Run
 
+joda now runs as **two processes** — a web server and one or more workers —
+plus Redis. Start Redis first, then:
+
 ```bash
-.venv/bin/uvicorn backend.app:app --reload --port 8000
+# terminal 1 — worker (runs Demucs off the queue; start N of these to scale)
+.venv/bin/python -m backend.run_worker
+
+# terminal 2 — web server
+.venv/bin/uvicorn backend.app:app --port 8000
 ```
 
-Open <http://localhost:8000>, drop in a song, wait for separation (1–3 min on CPU for a full
-track), then play, solo/mute, mix, and **Export** the result as a WAV.
+Open <http://localhost:8000>, drop in a song, watch the progress bar as the
+worker separates it, then play, solo/mute, mix, and **Export** the result.
 
-The first run downloads the `htdemucs_6s` model weights to `~/.cache/torch` (cached
-thereafter).
+The first run downloads the `htdemucs_6s` model weights to `~/.cache/torch`
+(cached thereafter).
+
+### Configuration
+
+All settings are overridable via `JODA_*` env vars or a `.env` file — see
+[`backend/config.py`](./backend/config.py). Useful ones:
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `JODA_DEVICE` | *(auto/CPU)* | Set `cuda` or `mps` to run Demucs on GPU |
+| `JODA_MAX_UPLOAD_BYTES` | `104857600` (100 MB) | Reject larger uploads |
+| `JODA_ARTIFACT_TTL` | `21600` (6h) | Auto-delete uploads/stems older than this |
+| `JODA_REDIS_URL` | `redis://localhost:6379/0` | Queue backend |
+
+Run the TTL sweeper on a schedule (cron / systemd timer / k8s CronJob):
+
+```bash
+.venv/bin/python -m backend.cleanup
+```
+
+### Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest backend/tests -q   # Demucs subprocess is mocked
+```
 
 ## Usage
 
@@ -83,24 +126,31 @@ The backend exposes a small HTTP API (see [`backend/app.py`](./backend/app.py)):
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/api/separate` | Multipart audio upload → runs Demucs → returns JSON mapping each stem to a URL |
+| `POST` | `/api/separate` | Multipart audio upload → validates, enqueues a job → `202 { job_id, status }` |
+| `GET`  | `/api/jobs/{job_id}` | Poll job status → `{ status, progress, stems? , error? }` |
 | `GET`  | `/api/stems/{job_id}/{stem}.wav` | Serve one separated stem WAV |
+| `GET`  | `/healthz` · `/readyz` | Liveness / readiness (readiness checks Redis) |
 
 ## Requirements
 
 - Python 3.12
 - FFmpeg (for audio decoding)
+- Redis (job queue)
 - 4GB+ RAM recommended
-- GPU optional — pass `-d cuda` (or `mps` on Apple Silicon) to Demucs for a large speedup
+- GPU optional — set `JODA_DEVICE=cuda` (or `mps` on Apple Silicon) for a large speedup
 
-## POC limitations / next steps
+## Status / next steps
 
-- **Synchronous separation.** `/api/separate` blocks for the full minutes-long run. For real
-  use, move Demucs into a background task (FastAPI `BackgroundTasks`, Celery, or a job queue)
-  and poll a status endpoint.
-- **No cleanup.** Uploads and stems accumulate under `backend/`. Add a TTL sweep.
-- **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` to the Demucs
-  command — roughly half the work.
+Phase 1 (robustness) is done: async job queue + progress, input hardening
+(size cap, magic-byte sniff, subprocess timeout, job-id validation), TTL
+cleanup, health probes, pinned deps, and a test suite. See
+[`PRODUCTION.md`](./PRODUCTION.md) for the full roadmap. Remaining highlights:
+
+- **Object storage.** Move uploads/stems to S3/R2/GCS with presigned URLs (currently local disk).
+- **GPU worker pool + autoscaling** on queue depth — the biggest throughput lever.
+- **Containerization** (Docker/compose: web + worker + redis + minio) and CI.
+- **Rate limiting / auth** before exposing publicly.
+- **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` — roughly half the work.
 
 ## License
 
