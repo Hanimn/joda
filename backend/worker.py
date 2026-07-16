@@ -4,33 +4,43 @@ joda — separation worker.
 The long-running Demucs separation lives here as a plain function that RQ
 executes in a **separate worker process**, decoupled from the web request.
 
+The job receives an *upload object key*; it pulls the bytes from the storage
+backend to a local scratch file (Demucs needs a real file), runs Demucs,
+uploads each produced stem back to storage, and returns the list of stem
+names. The web layer turns those into download URLs.
+
 Demucs streams progress to stderr as it processes segments; we parse that and
-push a 0–100 percentage into the RQ job's ``meta`` so the API can report live
-progress to the frontend.
+push a 0–100 percentage into the RQ job's ``meta`` for live progress.
 """
 
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from rq import get_current_job
 
 from .config import get_settings
+from .observability import JOBS_COMPLETED, SEPARATION_SECONDS, get_logger, log_event
+from .storage import get_storage, stem_key
+
+log = get_logger("joda.worker")
 
 # Demucs prints a tqdm-style progress bar to stderr, e.g. " 34%|###   | ...".
 _PROGRESS_RE = re.compile(rb"(\d+)%\|")
 
 
-def separate_job(job_id: str, input_path: str) -> dict:
-    """Run Demucs on ``input_path`` and return a stem -> relative-path map.
+def separate_job(job_id: str, upload_key_: str) -> list[str]:
+    """Run Demucs on the stored upload; return the list of produced stems.
 
-    Executed by an RQ worker. Progress is written to ``job.meta['progress']``.
-    Raises ``RuntimeError`` on failure so RQ marks the job failed with the
-    message captured in ``exc_info``.
+    Executed by an RQ worker. Progress -> ``job.meta['progress']``.
+    Raises ``RuntimeError`` on failure so RQ marks the job failed.
     """
     settings = get_settings()
+    storage = get_storage()
     rq_job = get_current_job()
+    started = time.monotonic()
 
     def set_progress(pct: int) -> None:
         if rq_job is not None:
@@ -39,15 +49,15 @@ def separate_job(job_id: str, input_path: str) -> dict:
 
     set_progress(0)
 
-    input_p = Path(input_path)
+    # Pull the upload to a local scratch file for the Demucs CLI.
+    input_p = storage.open_local(upload_key_)
     if not input_p.is_file():
-        raise RuntimeError(f"Input file missing: {input_path}")
+        raise RuntimeError(f"Input object missing: {upload_key_}")
 
+    # Local scratch output dir for demucs; we upload results to storage after.
     job_out_dir = settings.separated_dir / job_id
     job_out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Invoke demucs via THIS interpreter so we always use the venv's copy,
-    # regardless of PATH.
     cmd = [
         sys.executable, "-m", "demucs.separate",
         "-n", settings.model,
@@ -57,16 +67,13 @@ def separate_job(job_id: str, input_path: str) -> dict:
         cmd += ["-d", settings.device]
     cmd.append(str(input_p))
 
-    # Stream stderr so we can parse the progress bar; enforce a hard timeout.
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     tail: list[bytes] = []
     try:
         assert proc.stderr is not None
         for raw in iter(proc.stderr.readline, b""):
             tail.append(raw)
-            del tail[:-40]  # keep only the last ~40 lines for error context
+            del tail[:-40]
             m = None
             for m in _PROGRESS_RE.finditer(raw):
                 pass
@@ -76,27 +83,40 @@ def separate_job(job_id: str, input_path: str) -> dict:
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
+        JOBS_COMPLETED.labels(result="timeout").inc()
         raise RuntimeError(
             f"Separation timed out after {settings.separation_timeout}s."
         )
 
     if proc.returncode != 0:
         err = b"".join(tail).decode("utf-8", "replace")[-2000:]
+        JOBS_COMPLETED.labels(result="error").inc()
         raise RuntimeError(f"Demucs failed (exit {proc.returncode}):\n{err}")
 
-    # demucs writes to <out>/<model>/<track-name>/<stem>.wav. The upload is
-    # always stored as "input<suffix>", so the track subfolder is "input".
+    # demucs writes to <out>/<model>/<track-name>/<stem>.wav. The upload key is
+    # uploads/<job_id>/input<suffix>, so the track subfolder is "input".
     stem_folder = job_out_dir / settings.model / input_p.stem
     if not stem_folder.is_dir():
+        JOBS_COMPLETED.labels(result="error").inc()
         raise RuntimeError(f"Expected output folder not found: {stem_folder}")
 
-    stems = {}
+    produced: list[str] = []
     for stem in settings.stems:
-        if (stem_folder / f"{stem}.wav").exists():
-            stems[stem] = f"/api/stems/{job_id}/{stem}.wav"
+        wav = stem_folder / f"{stem}.wav"
+        if wav.exists():
+            storage.save_file(stem_key(job_id, stem), wav)
+            produced.append(stem)
 
-    if not stems:
+    if not produced:
+        JOBS_COMPLETED.labels(result="error").inc()
         raise RuntimeError("No stems were produced.")
 
     set_progress(100)
-    return stems
+    elapsed = time.monotonic() - started
+    SEPARATION_SECONDS.observe(elapsed)
+    JOBS_COMPLETED.labels(result="success").inc()
+    log_event(
+        log, "separation done",
+        job_id=job_id, stems=len(produced), seconds=round(elapsed, 1),
+    )
+    return produced

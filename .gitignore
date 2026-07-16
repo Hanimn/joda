@@ -21,6 +21,7 @@ dump.rdb
 # POC runtime data (uploads + separated stems can be large)
 backend/uploads/
 backend/separated/
+backend/storage/
 
 # Demucs model cache (downloaded on first run, ~80MB+)
 # lives in ~/.cache/torch by default, but ignore any local copy too

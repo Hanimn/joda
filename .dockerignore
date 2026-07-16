@@ -1,0 +1,22 @@
+# Keep the build context lean — don't ship dev/runtime cruft into the image.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.gitignore
+.DS_Store
+dump.rdb
+
+# Runtime data + local blobs
+backend/uploads/
+backend/separated/
+backend/storage/
+
+# Design kit + docs not needed at runtime
+Joda-Branding/
+sample/
+*.md
+!README.md
+
+.env

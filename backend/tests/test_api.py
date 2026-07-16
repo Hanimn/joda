@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 import backend.app as app_module
 import backend.queue as queue_module
+import backend.storage as storage_module
 from backend.config import get_settings
 
 
@@ -28,10 +29,15 @@ from backend.config import get_settings
 def _isolate(tmp_path, monkeypatch):
     """Point storage at a tmp dir and swap Redis + Queue for fakeredis."""
     settings = get_settings()
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    monkeypatch.setattr(settings, "storage_root", tmp_path / "storage")
     monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
     monkeypatch.setattr(settings, "separated_dir", tmp_path / "separated")
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.separated_dir.mkdir(parents=True, exist_ok=True)
+    # get_storage is lru_cached — clear so each test builds a fresh backend
+    # rooted at its own tmp dir.
+    storage_module.get_storage.cache_clear()
 
     fake = fakeredis.FakeStrictRedis()
     from rq import Queue
@@ -42,6 +48,7 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(queue_module, "get_redis", lambda: fake)
     monkeypatch.setattr(queue_module, "get_queue", lambda: q)
     yield
+    storage_module.get_storage.cache_clear()
 
 
 @pytest.fixture
@@ -238,3 +245,62 @@ def test_sweep_removes_old_dirs():
     assert not old.exists()
     assert new.exists()
     assert result["uploads_removed"] >= 1
+
+
+# --- Metrics -----------------------------------------------------------------
+
+
+def test_metrics_endpoint(client):
+    r = client.get("/metrics")
+    assert r.status_code == 200
+    assert "joda_jobs_enqueued_total" in r.text
+
+
+# --- Storage layer -----------------------------------------------------------
+
+
+def test_local_storage_roundtrip(tmp_path):
+    from backend.storage import LocalStorage, stem_key
+
+    st = LocalStorage(tmp_path / "blobs")
+    key = stem_key("abcdef012345", "vocals")
+    st.save(key, b"hello")
+    assert st.exists(key)
+    assert st.open_local(key).read_bytes() == b"hello"
+    assert st.url_for(key) == "/api/stems/abcdef012345/vocals.wav"
+    assert st.delete_prefix("stems/abcdef012345") == 1
+    assert not st.exists(key)
+
+
+def test_s3_storage_roundtrip_and_presign(monkeypatch):
+    """Real boto3 round-trip against an in-memory S3 (moto)."""
+    boto3 = pytest.importorskip("boto3")
+    moto = pytest.importorskip("moto")
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "storage_backend", "s3")
+    monkeypatch.setattr(settings, "s3_bucket", "joda-test")
+    monkeypatch.setattr(settings, "s3_endpoint_url", "")
+    monkeypatch.setattr(settings, "s3_access_key", "test")
+    monkeypatch.setattr(settings, "s3_secret_key", "test")
+
+    with moto.mock_aws():
+        boto3.client("s3", region_name=settings.s3_region).create_bucket(
+            Bucket="joda-test"
+        )
+        from backend.storage import S3Storage, stem_key
+
+        st = S3Storage()
+        key = stem_key("abcdef012345", "drums")
+        st.save(key, b"stemdata")
+        assert st.exists(key)
+        assert st.open_local(key).read_bytes() == b"stemdata"
+
+        url = st.url_for(key)
+        # Presigned URL points at the object and carries a signature (moto's
+        # default signer emits v2-style `Signature=`; real AWS may use v4).
+        assert "joda-test" in url and "drums.wav" in url
+        assert "Signature=" in url or "X-Amz-Signature" in url
+
+        assert st.delete_prefix("stems/abcdef012345") >= 1
+        assert not st.exists(key)

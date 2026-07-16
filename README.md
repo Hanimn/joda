@@ -28,40 +28,57 @@ clock, so muting, soloing, and adjusting volume never breaks sync. Bounce the cu
 out to a WAV at any time.
 
 ```
-frontend/index.html   Single-page studio UI: drag-drop upload + Web Audio stem mixer + WAV export
-backend/app.py         FastAPI: validate upload -> enqueue job -> poll status -> serve stem WAVs
-backend/worker.py      RQ task: runs demucs in a separate process, reports live progress
-backend/queue.py       Shared Redis connection + RQ queue
-backend/config.py      Env-driven settings (JODA_* / .env)
-backend/cleanup.py     TTL sweeper for old uploads + stems
+frontend/index.html    Single-page studio UI: drag-drop upload + Web Audio stem mixer + WAV export
+backend/app.py          FastAPI: validate upload -> enqueue job -> poll status -> stem URLs
+backend/worker.py       RQ task: runs demucs in a separate process, reports live progress
+backend/queue.py        Shared Redis connection + RQ queue
+backend/storage.py      Blob store abstraction: local disk or S3/R2/GCS/minio (presigned URLs)
+backend/config.py       Env-driven settings (JODA_* / .env)
+backend/observability.py  Structured JSON logging, Sentry, Prometheus /metrics
+backend/cleanup.py      TTL sweeper for old uploads + stems (local + S3)
+Dockerfile / docker-compose.yml   Full stack: web + worker + redis + minio
 ```
 
-Separation runs **asynchronously**: the upload endpoint enqueues a job and
-returns immediately, a worker process runs Demucs off a Redis queue, and the
-browser polls for progress. This keeps the web server responsive and lets you
-scale throughput by running more workers (on GPU boxes for a large speedup).
+Separation runs **asynchronously**: the upload endpoint stores the file in the
+blob store and enqueues a job, a worker process runs Demucs off a Redis queue
+and uploads stems back to the store, and the browser polls for progress. This
+keeps the web server responsive and lets you scale throughput by running more
+workers (on GPU boxes for a large speedup).
 
 > **Note on guitar:** `htdemucs_6s` emits a single `guitar` stem. Splitting a guitar track into
 > *lead* vs. *rhythm* is a musical role, not an instrument class — no open-source (or current
 > cloud) model does it reliably, so it is out of scope.
 
-## Setup
+## Run
 
-Requires **Python 3.12**, **ffmpeg**, and **Redis** on your machine (Demucs uses
-ffmpeg to decode mp3/m4a/etc; Redis backs the job queue).
+### Docker (recommended)
+
+The whole stack — web + worker + Redis + minio (S3-compatible object store) —
+comes up with one command:
+
+```bash
+docker compose up --build
+```
+
+Open <http://localhost:8000> (minio console: <http://localhost:9001>,
+`minioadmin`/`minioadmin`). Scale workers for more throughput:
+
+```bash
+docker compose up --scale worker=3
+```
+
+The image bakes in ffmpeg and the `htdemucs_6s` weights, so containers start
+fast and don't each re-download the model.
+
+### Local (no Docker)
+
+Runs as **two processes** plus Redis. Start Redis first, then:
 
 ```bash
 # macOS: brew install ffmpeg redis && brew services start redis
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-```
 
-## Run
-
-joda now runs as **two processes** — a web server and one or more workers —
-plus Redis. Start Redis first, then:
-
-```bash
 # terminal 1 — worker (runs Demucs off the queue; start N of these to scale)
 .venv/bin/python -m backend.run_worker
 
@@ -71,26 +88,31 @@ plus Redis. Start Redis first, then:
 
 Open <http://localhost:8000>, drop in a song, watch the progress bar as the
 worker separates it, then play, solo/mute, mix, and **Export** the result.
-
-The first run downloads the `htdemucs_6s` model weights to `~/.cache/torch`
-(cached thereafter).
+Local mode defaults to disk storage; the first run downloads the model weights
+to `~/.cache/torch` (cached thereafter).
 
 ### Configuration
 
-All settings are overridable via `JODA_*` env vars or a `.env` file — see
-[`backend/config.py`](./backend/config.py). Useful ones:
+All settings are overridable via `JODA_*` env vars or a `.env` file (copy
+[`.env.example`](./.env.example)) — see [`backend/config.py`](./backend/config.py).
+Useful ones:
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `JODA_DEVICE` | *(auto/CPU)* | Set `cuda` or `mps` to run Demucs on GPU |
+| `JODA_STORAGE_BACKEND` | `local` | `local` (disk) or `s3` (S3/R2/GCS/minio) |
+| `JODA_S3_ENDPOINT_URL` | *(AWS)* | S3 endpoint (e.g. `http://minio:9000`) |
+| `JODA_S3_PUBLIC_ENDPOINT_URL` | *(=endpoint)* | Browser-reachable host for presigned URLs |
 | `JODA_MAX_UPLOAD_BYTES` | `104857600` (100 MB) | Reject larger uploads |
-| `JODA_ARTIFACT_TTL` | `21600` (6h) | Auto-delete uploads/stems older than this |
+| `JODA_ARTIFACT_TTL` | `21600` (6h) | Auto-delete artifacts older than this |
 | `JODA_REDIS_URL` | `redis://localhost:6379/0` | Queue backend |
+| `JODA_SENTRY_DSN` | *(disabled)* | Error tracking |
 
-Run the TTL sweeper on a schedule (cron / systemd timer / k8s CronJob):
+With `s3`, stems are served to the browser via **presigned URLs** (downloads
+bypass the app). Run the TTL sweeper on a schedule (cron / systemd / k8s CronJob):
 
 ```bash
-.venv/bin/python -m backend.cleanup
+.venv/bin/python -m backend.cleanup   # or: docker compose run --rm web cleanup
 ```
 
 ### Tests
@@ -127,29 +149,36 @@ The backend exposes a small HTTP API (see [`backend/app.py`](./backend/app.py)):
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/api/separate` | Multipart audio upload → validates, enqueues a job → `202 { job_id, status }` |
-| `GET`  | `/api/jobs/{job_id}` | Poll job status → `{ status, progress, stems? , error? }` |
-| `GET`  | `/api/stems/{job_id}/{stem}.wav` | Serve one separated stem WAV |
+| `GET`  | `/api/jobs/{job_id}` | Poll job status → `{ status, progress, stems?, error? }` (stems are app routes or presigned S3 URLs) |
+| `GET`  | `/api/stems/{job_id}/{stem}.wav` | Serve a stem (local backend; S3 uses presigned URLs) |
 | `GET`  | `/healthz` · `/readyz` | Liveness / readiness (readiness checks Redis) |
+| `GET`  | `/metrics` | Prometheus metrics |
 
 ## Requirements
 
 - Python 3.12
 - FFmpeg (for audio decoding)
 - Redis (job queue)
+- Object store for production (S3/R2/GCS/minio); local disk works for dev
 - 4GB+ RAM recommended
 - GPU optional — set `JODA_DEVICE=cuda` (or `mps` on Apple Silicon) for a large speedup
 
 ## Status / next steps
 
-Phase 1 (robustness) is done: async job queue + progress, input hardening
+**Phase 1 (robustness)** ✅ — async job queue + progress, input hardening
 (size cap, magic-byte sniff, subprocess timeout, job-id validation), TTL
-cleanup, health probes, pinned deps, and a test suite. See
-[`PRODUCTION.md`](./PRODUCTION.md) for the full roadmap. Remaining highlights:
+cleanup, health probes, pinned deps, tests.
 
-- **Object storage.** Move uploads/stems to S3/R2/GCS with presigned URLs (currently local disk).
+**Phase 2 (deployable)** ✅ — object storage (local/S3 with presigned URLs),
+Dockerfile + docker-compose (web + worker + redis + minio, weights baked in),
+structured JSON logging, Sentry hook, Prometheus `/metrics`.
+
+See [`PRODUCTION.md`](./PRODUCTION.md) for the full roadmap. Remaining (Phase 3):
+
 - **GPU worker pool + autoscaling** on queue depth — the biggest throughput lever.
-- **Containerization** (Docker/compose: web + worker + redis + minio) and CI.
 - **Rate limiting / auth** before exposing publicly.
+- **CDN** in front of stem downloads; **result caching** by upload hash.
+- **CI** (test + lint + image build) on every push.
 - **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` — roughly half the work.
 
 ## License

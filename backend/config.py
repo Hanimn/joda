@@ -24,6 +24,28 @@ class Settings(BaseSettings):
     separated_dir: Path = BASE_DIR / "separated"
     frontend_dir: Path = BASE_DIR.parent / "frontend"
 
+    # --- Storage backend ---------------------------------------------------
+    # "local" = disk (dev default), "s3" = any S3-compatible object store.
+    storage_backend: str = "local"
+    storage_root: Path = BASE_DIR / "storage"  # local-backend blob root
+    # S3 / R2 / GCS / minio settings (used when storage_backend == "s3").
+    s3_bucket: str = "joda"
+    s3_endpoint_url: str = ""     # e.g. http://minio:9000 for minio; "" = AWS
+    # Endpoint used when SIGNING browser-facing URLs. For minio-in-docker the
+    # internal endpoint (minio:9000) isn't resolvable by the browser, so set
+    # this to the host-reachable URL (e.g. http://localhost:9000). Empty =
+    # reuse s3_endpoint_url.
+    s3_public_endpoint_url: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""       # falls back to standard AWS env/role creds
+    s3_secret_key: str = ""
+    s3_presign_ttl: int = 3600    # presigned stem-URL lifetime (seconds)
+
+    # --- Observability -----------------------------------------------------
+    sentry_dsn: str = ""          # empty = disabled
+    environment: str = "development"
+    log_level: str = "INFO"
+
     # --- Demucs model ------------------------------------------------------
     model: str = "htdemucs_6s"
     # Demucs device: "" = auto/CPU, or "cuda" / "mps" for GPU workers.

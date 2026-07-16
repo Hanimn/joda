@@ -18,3 +18,10 @@ redis==5.2.1
 
 # --- Input validation ---
 filetype==1.2.0           # magic-byte content sniffing (not just extension)
+
+# --- Object storage (S3 / R2 / GCS / minio) ---
+boto3==1.35.99
+
+# --- Observability ---
+prometheus-client==0.21.1
+sentry-sdk==2.20.0
