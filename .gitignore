@@ -3,8 +3,9 @@
 # macOS
 .DS_Store
 
-# Internal research notes (not published)
+# Internal research / planning notes (kept locally, not published)
 track-separation-research.md
+PRODUCTION.md
 
 # Python
 .venv/

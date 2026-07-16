@@ -184,7 +184,7 @@ hash), per-client rate limiting, GPU worker compose profile, CI (ruff + pytest
 + docker build), and a deployment guide ([`DEPLOYMENT.md`](./DEPLOYMENT.md))
 covering autoscaling on queue depth and CDN-fronted downloads.
 
-See [`PRODUCTION.md`](./PRODUCTION.md) for the original roadmap. Possible next:
+Possible next steps:
 
 - **Auth / quotas** — API keys with per-key limits (rate limiting is per-IP today).
 - **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` — roughly half the work.
