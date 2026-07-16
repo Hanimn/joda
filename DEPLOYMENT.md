@@ -21,6 +21,21 @@ docker compose up --build              # web + worker + redis + minio
 docker compose up --scale worker=3     # more CPU workers
 ```
 
+> **Build architecture — amd64 only.** The image builds on `linux/amd64`
+> (standard cloud hosts and CI). One demucs dependency (`sphn`) ships no
+> `aarch64` wheel, so a native **arm64** build (Apple Silicon, AWS Graviton)
+> fails compiling it from source. Building on an ARM machine? Force the platform
+> so it builds (and runs, emulated) as amd64:
+>
+> ```bash
+> docker build --platform=linux/amd64 -t joda .
+> DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose up --build
+> ```
+>
+> Deploy targets are almost always amd64, so this is a local-dev caveat, not a
+> production one. For a true native ARM image you'd add a Rust toolchain to the
+> build stage so `sphn` compiles.
+
 ## GPU workers
 
 Demucs is ~5–20× faster on a GPU. Requirements: NVIDIA drivers + the

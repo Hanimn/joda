@@ -74,6 +74,9 @@ docker compose up --scale worker=3
 The image bakes in ffmpeg and the `htdemucs_6s` weights, so containers start
 fast and don't each re-download the model.
 
+> Builds on `linux/amd64` (cloud + CI). On Apple Silicon / ARM, prefix with
+> `DOCKER_DEFAULT_PLATFORM=linux/amd64` — see [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+
 ### Local (no Docker)
 
 Runs as **two processes** plus Redis. Start Redis first, then:
