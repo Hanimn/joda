@@ -44,8 +44,11 @@ def cached_job(job_id: str, stems: list[str]) -> list[str]:
     return stems
 
 
-def separate_job(job_id: str, upload_key_: str, digest: str = "") -> list[str]:
+def separate_job(job_id: str, upload_key_: str, digest: str = "", mode: str = "6stem") -> list[str]:
     """Run Demucs on the stored upload; return the list of produced stems.
+
+    ``mode`` selects the split: "6stem" (full htdemucs_6s) or "2stem"
+    (vocals / no_vocals, via ``--two-stems=vocals``, ~half the work).
 
     Executed by an RQ worker. Progress -> ``job.meta['progress']``.
     Raises ``RuntimeError`` on failure so RQ marks the job failed.
@@ -76,6 +79,9 @@ def separate_job(job_id: str, upload_key_: str, digest: str = "") -> list[str]:
         "-n", settings.model,
         "-o", str(job_out_dir),
     ]
+    if mode == "2stem":
+        # Split into vocals + no_vocals only — roughly half the compute.
+        cmd += ["--two-stems", "vocals"]
     if settings.device:
         cmd += ["-d", settings.device]
     cmd.append(str(input_p))
@@ -114,7 +120,7 @@ def separate_job(job_id: str, upload_key_: str, digest: str = "") -> list[str]:
         raise RuntimeError(f"Expected output folder not found: {stem_folder}")
 
     produced: list[str] = []
-    for stem in settings.stems:
+    for stem in settings.stems_for(mode):
         wav = stem_folder / f"{stem}.wav"
         if wav.exists():
             storage.save_file(stem_key(job_id, stem), wav)

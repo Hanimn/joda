@@ -358,6 +358,25 @@
     }
     .speed button.on { background: var(--surface); color: var(--fg); }
 
+    /* Mode selector on the drop screen — reuses the segmented-control look. */
+    .mode-select {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 3px;
+      margin: 18px auto 0;
+    }
+    .mode-select button {
+      border: none; background: none; color: var(--muted);
+      font-size: 12.5px; font-weight: 500;
+      padding: 7px 16px; border-radius: var(--radius-sm); cursor: pointer;
+      transition: color 150ms var(--ease-out), background 150ms var(--ease-out);
+    }
+    .mode-select button.on { background: var(--surface); color: var(--fg); }
+    .mode-select button small { display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; margin-top: 1px; }
+    .mode-select button.on small { color: color-mix(in oklch, var(--fg) 60%, transparent); }
+
     .transport-controls { display: flex; align-items: center; gap: 8px; }
     .transport-btn {
       width: 40px; height: 40px;
@@ -568,7 +587,11 @@
 
       <div class="transport-right">
         <button class="btn btn-ghost" id="resetBtn" title="Reset all stems">Reset</button>
-        <button class="btn btn-primary" id="exportBtn" aria-label="Export current mix as WAV">
+        <div class="speed" id="fmtSelect" role="radiogroup" aria-label="Export format" title="Export format">
+          <button type="button" data-fmt="wav" class="on" role="radio" aria-checked="true">WAV</button>
+          <button type="button" data-fmt="mp3" role="radio" aria-checked="false">MP3</button>
+        </div>
+        <button class="btn btn-primary" id="exportBtn" aria-label="Export current mix">
           <svg fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
           <span class="export-spinner" aria-hidden="true"></span>
           <span class="export-label">Export</span>
@@ -613,11 +636,20 @@
           <p>mp3 · wav · flac · ogg · m4a</p>
           <input type="file" id="file" accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a" hidden />
         </div>
+        <div class="mode-select" id="modeSelect" role="radiogroup" aria-label="Separation mode">
+          <button type="button" data-mode="6stem" class="on" role="radio" aria-checked="true">
+            6 stems<small>vocals · drums · bass · guitar · piano · other</small>
+          </button>
+          <button type="button" data-mode="2stem" role="radio" aria-checked="false">
+            2 stems<small>vocals · instrumental — ~2× faster</small>
+          </button>
+        </div>
         <div class="err" id="err"></div>
       </div>
     </div>
   </div>
 
+  <script src="/assets/vendor/lame.min.js"></script>
   <script>
     // ------------------------------------------------------------------
     //  Stem metadata. Order = track order (top→bottom), matching the joda
@@ -631,6 +663,8 @@
       guitar: { label: "Guitar", color: "#6ba86b", varName: "--stem-guitar" },
       piano:  { label: "Piano",  color: "#6b9dd4", varName: "--stem-piano"  },
       other:  { label: "Other",  color: "#7a7d85", varName: "--stem-other"  },
+      // 2-stem mode: the instrumental (everything but vocals).
+      no_vocals: { label: "Instrumental", color: "#6ba86b", varName: "--stem-guitar" },
     };
     const ORDER = Object.keys(STEM_META);
 
@@ -670,6 +704,20 @@
     // ------------------------------------------------------------------
     drop.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => { if (fileInput.files.length) upload(fileInput.files[0]); });
+
+    // Separation mode selector (segmented control). Default: 6-stem.
+    let selectedMode = "6stem";
+    const modeSelect = $("modeSelect");
+    modeSelect.addEventListener("click", e => {
+      const btn = e.target.closest("button[data-mode]");
+      if (!btn) return;
+      selectedMode = btn.dataset.mode;
+      [...modeSelect.children].forEach(b => {
+        const on = b === btn;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-checked", on ? "true" : "false");
+      });
+    });
     ["dragenter", "dragover"].forEach(ev =>
       drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
     ["dragleave", "drop"].forEach(ev =>
@@ -706,6 +754,7 @@
 
       const body = new FormData();
       body.append("file", file);
+      body.append("mode", selectedMode);
       try {
         // 1. Enqueue the separation job (returns immediately with a job_id).
         const res = await fetch("/api/separate", { method: "POST", body });
@@ -1217,11 +1266,52 @@
         return new Blob([arrayBuffer], { type: "audio/wav" });
       }
 
-      async function exportMix() {
+      // encodeMp3(): rendered AudioBuffer -> MP3 (CBR 192kbps) Blob via lamejs.
+      // Interleaves to 16-bit PCM per channel in 1152-sample frames (an MP3
+      // granule). Mono renders as one channel; anything else downmixes to
+      // stereo (lamejs handles 1 or 2 channels only).
+      function encodeMp3(audioBuffer, kbps = 192) {
+        if (typeof lamejs === "undefined" || !lamejs.Mp3Encoder) {
+          throw new Error("MP3 encoder unavailable.");
+        }
+        const channels = Math.min(2, audioBuffer.numberOfChannels);
+        const sampleRate = audioBuffer.sampleRate;
+        const enc = new lamejs.Mp3Encoder(channels, sampleRate, kbps);
+        const frames = audioBuffer.length;
+        const left = audioBuffer.getChannelData(0);
+        const right = channels > 1 ? audioBuffer.getChannelData(1) : null;
+
+        // Float [-1,1] -> Int16, clamped (same asymmetric scaling as encodeWav).
+        const toInt16 = (f32, start, len) => {
+          const out = new Int16Array(len);
+          for (let i = 0; i < len; i++) {
+            let s = f32[start + i];
+            if (s > 1) s = 1; else if (s < -1) s = -1;
+            out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          return out;
+        };
+
+        const BLOCK = 1152;
+        const parts = [];
+        for (let i = 0; i < frames; i += BLOCK) {
+          const len = Math.min(BLOCK, frames - i);
+          const l = toInt16(left, i, len);
+          let chunk;
+          if (right) chunk = enc.encodeBuffer(l, toInt16(right, i, len));
+          else chunk = enc.encodeBuffer(l);
+          if (chunk.length) parts.push(chunk);
+        }
+        const end = enc.flush();
+        if (end.length) parts.push(end);
+        return new Blob(parts, { type: "audio/mpeg" });
+      }
+
+      async function exportMix(format = "wav") {
         if (!names.length) throw new Error("No stems loaded.");
         const rendered = await renderMix();
-        const blob = encodeWav(rendered);
-        return { blob, sampleRate: rendered.sampleRate };
+        const blob = format === "mp3" ? encodeMp3(rendered) : encodeWav(rendered);
+        return { blob, sampleRate: rendered.sampleRate, format };
       }
 
       return {
@@ -1291,8 +1381,8 @@
       setTimeout(() => URL.revokeObjectURL(url), 0); // deferred revoke
     }
 
-    // "My Song.mp3" -> "My Song (mix).wav"; "" / default -> "mix.wav".
-    function exportFilename(rawTitle) {
+    // "My Song.mp3" -> "My Song (mix).<ext>"; "" / default -> "mix.<ext>".
+    function exportFilename(rawTitle, ext = "wav") {
       let base = (rawTitle || "").trim();
       base = base.replace(/\.(mp3|wav|flac|m4a|ogg|oga|aac|wma|aiff|aif)$/i, "");
       base = base.replace(/[\/\\?%*:|"<>\x00-\x1F]/g, "-");
@@ -1300,16 +1390,30 @@
       base = base.replace(/\s*-\s*/g, m => (/\s/.test(m) ? " " : "-"));
       base = base.replace(/^[\s.\-]+|[\s.\-]+$/g, "");
       if (base.length > 120) base = base.slice(0, 120).trim();
-      if (!base || /^joda$/i.test(base) || /^untitled$/i.test(base)) return "mix.wav";
-      return base + " (mix).wav";
+      if (!base || /^joda$/i.test(base) || /^untitled$/i.test(base)) return `mix.${ext}`;
+      return `${base} (mix).${ext}`;
     }
+
+    // Export format selector (WAV default).
+    let exportFormat = "wav";
+    const fmtSelect = $("fmtSelect");
+    fmtSelect.addEventListener("click", e => {
+      const btn = e.target.closest("button[data-fmt]");
+      if (!btn) return;
+      exportFormat = btn.dataset.fmt;
+      [...fmtSelect.children].forEach(b => {
+        const on = b === btn;
+        b.classList.toggle("on", on);
+        b.setAttribute("aria-checked", on ? "true" : "false");
+      });
+    });
 
     exportBtn.addEventListener("click", async () => {
       if (!mixer.ready || exporting) return; // pre-load or already exporting => no-op
       setExporting(true);
       try {
-        const { blob } = await mixer.exportMix();
-        triggerDownload(blob, exportFilename(songTitle.textContent));
+        const { blob, format } = await mixer.exportMix(exportFormat);
+        triggerDownload(blob, exportFilename(songTitle.textContent, format));
       } catch (err) {
         showExportError(err && err.message ? err.message : "Export failed.");
       } finally {

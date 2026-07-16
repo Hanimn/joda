@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import filetype
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -98,8 +98,21 @@ async def metrics():
 
 
 @app.post("/api/separate", status_code=202)
-async def separate(request: Request, file: UploadFile = File(...)):
-    """Validate + store the upload, enqueue separation, return a job handle."""
+async def separate(
+    request: Request,
+    file: UploadFile = File(...),
+    mode: str = Form("6stem"),
+):
+    """Validate + store the upload, enqueue separation, return a job handle.
+
+    ``mode`` selects the split: "6stem" (default) or "2stem" (vocals /
+    instrumental, ~half the compute).
+    """
+    if mode not in settings.stem_sets:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown mode '{mode}'. Allowed: {', '.join(settings.stem_sets)}.",
+        )
     # Rate limit per client (fails open if Redis is down).
     client_id = request.client.host if request.client else "unknown"
     allowed, retry_after = ratelimit.check(get_redis(), client_id)
@@ -148,8 +161,8 @@ async def separate(request: Request, file: UploadFile = File(...)):
     storage = get_storage()
     redis = get_redis()
 
-    # Result cache: identical upload -> copy prior stems and skip Demucs.
-    digest = cache.content_hash(bytes(data))
+    # Result cache: identical upload + mode -> copy prior stems and skip Demucs.
+    digest = cache.content_hash(bytes(data), mode)
     hit = cache.get_hit(redis, storage, digest)
     if hit:
         canonical, stems = hit
@@ -177,6 +190,7 @@ async def separate(request: Request, file: UploadFile = File(...)):
             job_id,
             key,
             digest,
+            mode,
             job_id=job_id,  # reuse our id as the RQ job id
             job_timeout=settings.job_timeout,
             result_ttl=settings.result_ttl,
@@ -190,7 +204,7 @@ async def separate(request: Request, file: UploadFile = File(...)):
 
     JOBS_ENQUEUED.inc()
     UPLOAD_BYTES.observe(len(data))
-    log_event(log, "job enqueued", job_id=job_id, bytes=len(data), filename=file.filename)
+    log_event(log, "job enqueued", job_id=job_id, bytes=len(data), filename=file.filename, mode=mode)
     return {"job_id": job_id, "status": "queued", "original_name": file.filename}
 
 
@@ -240,7 +254,7 @@ async def get_stem(job_id: str, stem: str):
     """Serve one separated stem WAV (local backend). S3 uses presigned URLs."""
     if not _JOB_ID_RE.match(job_id):
         raise HTTPException(status_code=400, detail="Invalid job id.")
-    if stem not in settings.stems:
+    if stem not in settings.all_stems:
         raise HTTPException(status_code=404, detail="Unknown stem.")
 
     storage = get_storage()

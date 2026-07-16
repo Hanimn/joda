@@ -184,11 +184,15 @@ hash), per-client rate limiting, GPU worker compose profile, CI (ruff + pytest
 + docker build), and a deployment guide ([`DEPLOYMENT.md`](./DEPLOYMENT.md))
 covering autoscaling on queue depth and CDN-fronted downloads.
 
+**Modes & export** ✅ — pick **6 stems** (full split) or **2 stems**
+(vocals / instrumental, ~2× faster) on upload. Export the live mix as **WAV**
+or **MP3** (client-side, 192 kbps via a bundled lamejs).
+
 Possible next steps:
 
 - **Auth / quotas** — API keys with per-key limits (rate limiting is per-IP today).
-- **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` — roughly half the work.
-- **Multi-format export** — MP3/FLAC alongside WAV.
+- **Job history / accounts** — persist past separations instead of losing the job id.
+- **FLAC export** — lossless alongside WAV/MP3.
 
 ## License
 

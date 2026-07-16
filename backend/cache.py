@@ -25,8 +25,12 @@ from .config import get_settings
 from .storage import Storage, stem_key
 
 
-def content_hash(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+def content_hash(data: bytes, mode: str = "6stem") -> str:
+    """Cache digest for an upload. ``mode`` is mixed in so the same file
+    separated two different ways (6-stem vs 2-stem) gets distinct entries."""
+    h = hashlib.sha256(data)
+    h.update(b"|" + mode.encode())
+    return h.hexdigest()
 
 
 def _key(digest: str) -> str:

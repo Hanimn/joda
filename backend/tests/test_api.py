@@ -128,7 +128,7 @@ class _FakePopen:
     """Stand-in for subprocess.Popen that emits fake demucs stderr + writes
     the stem files the worker expects to find afterwards."""
 
-    def __init__(self, *, returncode, stem_dir, emit_progress=True):
+    def __init__(self, *, returncode, stem_dir, emit_progress=True, stems=None):
         self._returncode = returncode
         lines = []
         if emit_progress:
@@ -138,7 +138,7 @@ class _FakePopen:
         self.stderr = io.BytesIO(b"".join(lines))
         if returncode == 0:
             stem_dir.mkdir(parents=True, exist_ok=True)
-            for s in get_settings().stems:
+            for s in (stems if stems is not None else get_settings().stems):
                 (stem_dir / f"{s}.wav").write_bytes(_wav_bytes(64))
 
     @property
@@ -162,9 +162,11 @@ def _install_fake_popen(monkeypatch, returncode=0):
         job_out = Path(cmd[out_idx])
         input_p = Path(cmd[-1])
         stem_dir = job_out / settings.model / input_p.stem
+        # Honor --two-stems=vocals: demucs then emits only vocals + no_vocals.
+        stems = ["vocals", "no_vocals"] if "--two-stems" in cmd else None
         return _FakePopen(
             returncode=returncode, stem_dir=stem_dir,
-            emit_progress=(returncode == 0),
+            emit_progress=(returncode == 0), stems=stems,
         )
 
     monkeypatch.setattr("backend.worker.subprocess.Popen", factory)
@@ -192,6 +194,35 @@ def test_enqueue_and_finish(client, monkeypatch):
 
     # And a stem is actually served.
     assert client.get(body["stems"]["vocals"]).status_code == 200
+
+
+def test_two_stem_mode(client, monkeypatch):
+    """mode=2stem runs --two-stems and yields exactly vocals + no_vocals."""
+    _install_fake_popen(monkeypatch, returncode=0)
+
+    r = client.post(
+        "/api/separate",
+        files={"file": ("song.wav", _wav_bytes(), "audio/wav")},
+        data={"mode": "2stem"},
+    )
+    assert r.status_code == 202
+    job_id = r.json()["job_id"]
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["status"] == "finished"
+    assert set(body["stems"]) == {"vocals", "no_vocals"}
+    # The instrumental stem is servable (uses the widened stem validation).
+    assert client.get(body["stems"]["no_vocals"]).status_code == 200
+
+
+def test_unknown_mode_rejected(client):
+    r = client.post(
+        "/api/separate",
+        files={"file": ("song.wav", _wav_bytes(), "audio/wav")},
+        data={"mode": "9stem"},
+    )
+    assert r.status_code == 400
+    assert "mode" in r.json()["detail"].lower()
 
 
 def test_job_failure_surfaces_error(client, monkeypatch):

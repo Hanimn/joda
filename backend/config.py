@@ -82,6 +82,23 @@ class Settings(BaseSettings):
     # The six stems htdemucs_6s produces.
     stems: list[str] = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 
+    # Separation modes. "6stem" = full htdemucs_6s split; "2stem" = a fast
+    # vocals / no_vocals (instrumental) split via demucs --two-stems, ~half the
+    # work. The value is the stem set each mode produces.
+    stem_sets: dict[str, list[str]] = {
+        "6stem": ["vocals", "drums", "bass", "guitar", "piano", "other"],
+        "2stem": ["vocals", "no_vocals"],
+    }
+
+    @property
+    def all_stems(self) -> set[str]:
+        """Every stem name any mode can produce (for path validation)."""
+        return {s for names in self.stem_sets.values() for s in names}
+
+    def stems_for(self, mode: str) -> list[str]:
+        """Stem names a given mode produces; falls back to the 6-stem set."""
+        return self.stem_sets.get(mode, self.stem_sets["6stem"])
+
 
 @lru_cache
 def get_settings() -> Settings:
