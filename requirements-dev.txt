@@ -1,0 +1,6 @@
+# joda — development / test dependencies (installed on top of requirements.txt)
+pytest==8.3.4
+fakeredis==2.26.2
+httpx==0.28.1
+moto[s3]==5.0.28          # in-memory S3 for storage-layer tests
+ruff==0.9.2               # lint (CI gate)

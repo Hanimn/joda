@@ -1,136 +1,260 @@
 """
 joda — FastAPI backend for audio stem separation.
 
-Path B from track-separation-research.md: local Demucs via CLI subprocess.
+Async job architecture (production model):
 
-Flow:
-    POST /api/separate  (multipart file upload)
-        -> save upload to uploads/<job_id>/<filename>
-        -> run `demucs` CLI as a subprocess (6-stem htdemucs_6s model)
-        -> return JSON with URLs to each stem WAV
+    POST /api/separate  (multipart upload)
+        -> validate (size / extension / magic bytes)
+        -> store upload in the blob store (local disk or S3/minio)
+        -> ENQUEUE an RQ job (Demucs runs in a separate worker process)
+        -> return 202 { job_id, status: "queued" }   (returns immediately)
+
+    GET  /api/jobs/<job_id>
+        -> { status, progress, stems?, error? }
+           stems map each name to a download URL (app route or presigned S3).
+
     GET  /api/stems/<job_id>/<stem>.wav
-        -> serve a separated stem file
+        -> serve a stem (local backend only; S3 serves via presigned URLs)
 
-The separation is run SYNCHRONOUSLY inside the request. For a real song this
-blocks for ~1-3 minutes on CPU. That's fine for a POC (the UI shows a spinner);
-see the README for how to move this to a background task / job queue.
+    GET  /healthz  /readyz  /metrics
+
+The web process never runs Demucs itself, so a slow separation no longer ties
+up an HTTP worker. Run workers with:  python -m backend.run_worker
 """
 
-import shutil
-import subprocess
-import sys
+import re
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import filetype
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from redis.exceptions import RedisError
+from rq.exceptions import NoSuchJobError
+from rq.job import Job, JobStatus
 
-# --- Paths -------------------------------------------------------------------
+from . import cache, ratelimit
+from .cleanup import sweep
+from .config import get_settings
+from .observability import (
+    JOBS_ENQUEUED,
+    UPLOAD_BYTES,
+    init_observability,
+    log_event,
+)
+from .queue import get_queue, get_redis
+from .storage import get_storage, upload_key
+from .worker import cached_job, separate_job
 
-BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BASE_DIR / "uploads"
-SEPARATED_DIR = BASE_DIR / "separated"
-FRONTEND_DIR = BASE_DIR.parent / "frontend"
+settings = get_settings()
+log = init_observability("web")
 
-UPLOAD_DIR.mkdir(exist_ok=True)
-SEPARATED_DIR.mkdir(exist_ok=True)
+# job_id is our own hex uuid slice; validate before using it in any path.
+_JOB_ID_RE = re.compile(r"^[a-f0-9]{12}$")
 
-# The htdemucs_6s model produces these six stems (adds guitar + piano to the
-# base 4). NOTE: "piano" is Demucs's keys/piano source; "guitar" is a single
-# guitar stem — no local model splits lead vs. rhythm guitar.
-STEMS = ["vocals", "drums", "bass", "guitar", "piano", "other"]
-MODEL = "htdemucs_6s"
+# Read uploads in bounded chunks so a huge file can't exhaust memory.
+_CHUNK = 1024 * 1024
 
-# Accept common lossy/lossless containers ffmpeg/torchaudio can read.
-ALLOWED_SUFFIXES = {".mp3", ".wav", ".flac", ".ogg", ".m4a"}
 
-app = FastAPI(title="joda")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        sweep()
+    except Exception:  # noqa: BLE001 - never block startup on cleanup
+        log.warning("startup sweep failed", exc_info=True)
+    yield
+
+
+app = FastAPI(title="joda", lifespan=lifespan)
+
+
+# --- Health / metrics --------------------------------------------------------
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Ready only if Redis (the queue backend) is reachable."""
+    try:
+        get_redis().ping()
+    except RedisError as exc:
+        raise HTTPException(status_code=503, detail=f"redis unavailable: {exc}") from exc
+    return {"status": "ready"}
+
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # --- API ---------------------------------------------------------------------
 
 
-@app.post("/api/separate")
-async def separate(file: UploadFile = File(...)):
-    """Accept an audio upload, run Demucs, return URLs to the four stems."""
+@app.post("/api/separate", status_code=202)
+async def separate(request: Request, file: UploadFile = File(...)):
+    """Validate + store the upload, enqueue separation, return a job handle."""
+    # Rate limit per client (fails open if Redis is down).
+    client_id = request.client.host if request.client else "unknown"
+    allowed, retry_after = ratelimit.check(get_redis(), client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please slow down.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in ALLOWED_SUFFIXES:
+    if suffix not in settings.allowed_suffixes:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type '{suffix}'. "
-            f"Allowed: {', '.join(sorted(ALLOWED_SUFFIXES))}",
+            f"Allowed: {', '.join(sorted(settings.allowed_suffixes))}",
+        )
+
+    # Read the upload into memory with a hard size cap. Audio uploads are
+    # bounded by max_upload_bytes (100 MB default), so buffering is fine and
+    # keeps the storage backend simple (one put_object / write).
+    data = bytearray()
+    while chunk := await file.read(_CHUNK):
+        data += chunk
+        if len(data) > settings.max_upload_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds "
+                f"{settings.max_upload_bytes // (1024 * 1024)} MB limit.",
+            )
+
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    # Magic-byte sniff: don't trust the extension alone.
+    kind = filetype.guess(bytes(data[:512]))
+    if kind is None or not (
+        kind.mime.startswith("audio/") or kind.mime.startswith("video/")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="File does not look like a supported audio file.",
         )
 
     job_id = uuid.uuid4().hex[:12]
-    job_upload_dir = UPLOAD_DIR / job_id
-    job_upload_dir.mkdir(parents=True, exist_ok=True)
+    storage = get_storage()
+    redis = get_redis()
 
-    # Sanitize the stored name but keep the original stem for readable output.
-    safe_name = f"input{suffix}"
-    input_path = job_upload_dir / safe_name
-    with input_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Result cache: identical upload -> copy prior stems and skip Demucs.
+    digest = cache.content_hash(bytes(data))
+    hit = cache.get_hit(redis, storage, digest)
+    if hit:
+        canonical, stems = hit
+        cache.materialize(storage, canonical, job_id, stems)
+        try:
+            get_queue().enqueue(
+                cached_job, job_id, stems,
+                job_id=job_id,
+                result_ttl=settings.result_ttl,
+                failure_ttl=settings.failure_ttl,
+            )
+        except RedisError as err:
+            storage.delete_prefix(f"stems/{job_id}/")
+            raise HTTPException(status_code=503, detail="Job queue unavailable.") from err
+        JOBS_ENQUEUED.inc()
+        log_event(log, "cache hit enqueued", job_id=job_id, canonical=canonical)
+        return {"job_id": job_id, "status": "queued", "original_name": file.filename}
 
-    job_out_dir = SEPARATED_DIR / job_id
-    job_out_dir.mkdir(parents=True, exist_ok=True)
+    key = upload_key(job_id, suffix)
+    storage.save(key, bytes(data))
 
-    # demucs writes to <out>/<model>/<track-name>/<stem>.wav
-    # -o sets the output root; -n picks the model.
-    # Invoke via `python -m demucs.separate` using THIS interpreter so we always
-    # use the venv's demucs, regardless of whether `demucs` is on PATH.
-    cmd = [
-        sys.executable, "-m", "demucs.separate",
-        "-n", MODEL,
-        "-o", str(job_out_dir),
-        str(input_path),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Demucs failed:\n{proc.stderr[-2000:]}",
+    try:
+        get_queue().enqueue(
+            separate_job,
+            job_id,
+            key,
+            digest,
+            job_id=job_id,  # reuse our id as the RQ job id
+            job_timeout=settings.job_timeout,
+            result_ttl=settings.result_ttl,
+            failure_ttl=settings.failure_ttl,
         )
-
-    # Locate the produced stem folder. Track name = input filename without suffix.
-    stem_folder = job_out_dir / MODEL / input_path.stem
-    if not stem_folder.is_dir():
+    except RedisError as err:
+        storage.delete_prefix(f"uploads/{job_id}/")
         raise HTTPException(
-            status_code=500,
-            detail=f"Expected output folder not found: {stem_folder}",
-        )
+            status_code=503, detail="Job queue unavailable. Try again shortly."
+        ) from err
 
-    stems = {}
-    for stem in STEMS:
-        wav = stem_folder / f"{stem}.wav"
-        if wav.exists():
-            stems[stem] = f"/api/stems/{job_id}/{stem}.wav"
+    JOBS_ENQUEUED.inc()
+    UPLOAD_BYTES.observe(len(data))
+    log_event(log, "job enqueued", job_id=job_id, bytes=len(data), filename=file.filename)
+    return {"job_id": job_id, "status": "queued", "original_name": file.filename}
 
-    if not stems:
-        raise HTTPException(status_code=500, detail="No stems were produced.")
 
-    return {
-        "job_id": job_id,
-        "original_name": file.filename,
-        "stems": stems,
-    }
+@app.get("/api/jobs/{job_id}")
+async def job_status(job_id: str):
+    """Report queue/run status, progress, and stems when finished."""
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job id.")
+
+    try:
+        job = Job.fetch(job_id, connection=get_redis())
+    except NoSuchJobError:
+        raise HTTPException(status_code=404, detail="Unknown job.") from None
+    except RedisError as err:
+        raise HTTPException(status_code=503, detail="Job queue unavailable.") from err
+
+    status = job.get_status(refresh=True)
+    progress = int(job.meta.get("progress", 0)) if job.meta else 0
+
+    payload: dict = {"job_id": job_id, "status": status, "progress": progress}
+
+    if status == JobStatus.FINISHED:
+        # Worker returns a list of stem names; build download URLs here so the
+        # storage backend (app route vs. presigned S3 URL) is transparent.
+        stem_names = job.return_value() or []
+        storage = get_storage()
+        payload["stems"] = {
+            name: storage.url_for(f"stems/{job_id}/{name}.wav")
+            for name in stem_names
+        }
+        payload["progress"] = 100
+    elif status == JobStatus.FAILED:
+        msg = "Separation failed."
+        result = job.latest_result()
+        exc = getattr(result, "exc_string", None) if result else None
+        if exc:
+            lines = [ln for ln in exc.strip().splitlines() if ln.strip()]
+            if lines:
+                msg = lines[-1]
+        payload["error"] = msg
+
+    return payload
 
 
 @app.get("/api/stems/{job_id}/{stem}.wav")
 async def get_stem(job_id: str, stem: str):
-    """Serve one separated stem WAV."""
-    if stem not in STEMS:
+    """Serve one separated stem WAV (local backend). S3 uses presigned URLs."""
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job id.")
+    if stem not in settings.stems:
         raise HTTPException(status_code=404, detail="Unknown stem.")
 
-    # Reconstruct the path. The track subfolder is always "input" because we
-    # normalized the upload name above.
-    wav = SEPARATED_DIR / job_id / MODEL / "input" / f"{stem}.wav"
-    if not wav.exists():
+    storage = get_storage()
+    from .storage import stem_key
+
+    key = stem_key(job_id, stem)
+    if not storage.exists(key):
         raise HTTPException(status_code=404, detail="Stem not found.")
 
-    return FileResponse(wav, media_type="audio/wav", filename=f"{stem}.wav")
+    return FileResponse(
+        storage.open_local(key), media_type="audio/wav", filename=f"{stem}.wav"
+    )
 
 
-# --- Frontend (mounted last so /api/* takes precedence) ----------------------
+# --- Frontend (mounted last so /api/* and probes take precedence) ------------
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+app.mount("/", StaticFiles(directory=settings.frontend_dir, html=True), name="frontend")

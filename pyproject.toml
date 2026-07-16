@@ -1,0 +1,15 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pyflakes, pycodestyle, isort, bugbear, comprehensions, pyupgrade.
+select = ["F", "E", "W", "I", "B", "C4", "UP"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # FastAPI dependency-injection idiom: File(...)/Depends() in defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests build fixtures inline; allow assert-heavy, longer helpers.
+"backend/tests/*" = ["B011"]
