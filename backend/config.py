@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # Delete uploads/stems older than this many seconds. 0 disables the sweep.
     artifact_ttl: int = 6 * 3600  # 6 hours
 
+    # --- Result caching ----------------------------------------------------
+    # Dedupe identical uploads (by content hash) to skip re-separation.
+    cache_enabled: bool = True
+    cache_ttl: int = 7 * 24 * 3600  # remember a hash->result mapping for 7 days
+
+    # --- Rate limiting -----------------------------------------------------
+    # Fixed-window per-client cap on POST /api/separate. 0 disables.
+    rate_limit_per_min: int = 10
+
     # The six stems htdemucs_6s produces.
     stems: list[str] = ["vocals", "drums", "bass", "guitar", "piano", "other"]
 

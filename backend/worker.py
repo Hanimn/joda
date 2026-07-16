@@ -17,12 +17,13 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 from rq import get_current_job
 
+from .cache import record
 from .config import get_settings
 from .observability import JOBS_COMPLETED, SEPARATION_SECONDS, get_logger, log_event
+from .queue import get_redis
 from .storage import get_storage, stem_key
 
 log = get_logger("joda.worker")
@@ -31,7 +32,19 @@ log = get_logger("joda.worker")
 _PROGRESS_RE = re.compile(rb"(\d+)%\|")
 
 
-def separate_job(job_id: str, upload_key_: str) -> list[str]:
+def cached_job(job_id: str, stems: list[str]) -> list[str]:
+    """Instant job for a cache hit: stems were already copied into place by the
+    web layer, so just report them as finished. Keeps the poll API uniform."""
+    j = get_current_job()
+    if j is not None:
+        j.meta["progress"] = 100
+        j.save_meta()
+    JOBS_COMPLETED.labels(result="cache_hit").inc()
+    log_event(log, "cache hit", job_id=job_id, stems=len(stems))
+    return stems
+
+
+def separate_job(job_id: str, upload_key_: str, digest: str = "") -> list[str]:
     """Run Demucs on the stored upload; return the list of produced stems.
 
     Executed by an RQ worker. Progress -> ``job.meta['progress']``.
@@ -75,18 +88,18 @@ def separate_job(job_id: str, upload_key_: str) -> list[str]:
             tail.append(raw)
             del tail[:-40]
             m = None
-            for m in _PROGRESS_RE.finditer(raw):
-                pass
+            for _m in _PROGRESS_RE.finditer(raw):
+                m = _m
             if m:
                 set_progress(int(m.group(1)))
         proc.wait(timeout=settings.separation_timeout)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as err:
         proc.kill()
         proc.wait()
         JOBS_COMPLETED.labels(result="timeout").inc()
         raise RuntimeError(
             f"Separation timed out after {settings.separation_timeout}s."
-        )
+        ) from err
 
     if proc.returncode != 0:
         err = b"".join(tail).decode("utf-8", "replace")[-2000:]
@@ -115,6 +128,8 @@ def separate_job(job_id: str, upload_key_: str) -> list[str]:
     elapsed = time.monotonic() - started
     SEPARATION_SECONDS.observe(elapsed)
     JOBS_COMPLETED.labels(result="success").inc()
+    if digest:
+        record(get_redis(), digest, job_id, produced)
     log_event(
         log, "separation done",
         job_id=job_id, stems=len(produced), seconds=round(elapsed, 1),

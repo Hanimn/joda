@@ -1,0 +1,22 @@
+# joda — GPU worker override.
+#
+# Runs the worker(s) on NVIDIA GPU(s) for a large separation speedup. Requires
+# the host to have NVIDIA drivers + the NVIDIA Container Toolkit installed.
+#
+# Bring up the stack with GPU workers:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Scale GPU workers (one per visible GPU is a good rule of thumb):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --scale worker=2
+
+services:
+  worker:
+    environment:
+      JODA_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

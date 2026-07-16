@@ -19,8 +19,8 @@ from fastapi.testclient import TestClient
 import backend.app as app_module
 import backend.queue as queue_module
 import backend.storage as storage_module
+import backend.worker as worker_module
 from backend.config import get_settings
-
 
 # --- Fixtures ----------------------------------------------------------------
 
@@ -47,6 +47,8 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "get_queue", lambda: q)
     monkeypatch.setattr(queue_module, "get_redis", lambda: fake)
     monkeypatch.setattr(queue_module, "get_queue", lambda: q)
+    # worker binds get_redis at import time; jobs run inline in-process here.
+    monkeypatch.setattr(worker_module, "get_redis", lambda: fake)
     yield
     storage_module.get_storage.cache_clear()
 
@@ -258,7 +260,6 @@ def test_metrics_endpoint(client):
 
 # --- Storage layer -----------------------------------------------------------
 
-
 def test_local_storage_roundtrip(tmp_path):
     from backend.storage import LocalStorage, stem_key
 
@@ -304,3 +305,72 @@ def test_s3_storage_roundtrip_and_presign(monkeypatch):
 
         assert st.delete_prefix("stems/abcdef012345") >= 1
         assert not st.exists(key)
+
+
+# --- Result caching ----------------------------------------------------------
+
+
+def test_cache_hit_skips_separation(client, monkeypatch):
+    """Second upload of identical bytes -> cache hit, Demucs is NOT invoked."""
+    _install_fake_popen(monkeypatch, returncode=0)
+    audio = _wav_bytes()
+
+    # First upload runs the (faked) separation and records the cache entry.
+    r1 = client.post("/api/separate", files={"file": ("a.wav", audio, "audio/wav")})
+    job1 = r1.json()["job_id"]
+    b1 = client.get(f"/api/jobs/{job1}").json()
+    assert b1["status"] == "finished"
+
+    # Now make any further Demucs invocation an explicit failure — a cache hit
+    # must not touch the subprocess at all.
+    def boom(*a, **kw):
+        raise AssertionError("Demucs must not run on a cache hit")
+
+    monkeypatch.setattr("backend.worker.subprocess.Popen", boom)
+
+    r2 = client.post("/api/separate", files={"file": ("b.wav", audio, "audio/wav")})
+    job2 = r2.json()["job_id"]
+    assert job2 != job1
+    b2 = client.get(f"/api/jobs/{job2}").json()
+    assert b2["status"] == "finished"
+    assert set(b2["stems"]) == set(get_settings().stems)
+    # The cached job's own stems are served independently of the first job.
+    assert client.get(b2["stems"]["vocals"]).status_code == 200
+
+
+def test_cache_miss_on_different_bytes(client, monkeypatch):
+    """Different content -> no false cache hit (separation runs again)."""
+    _install_fake_popen(monkeypatch, returncode=0)
+    r1 = client.post("/api/separate", files={"file": ("a.wav", _wav_bytes(2048), "audio/wav")})
+    assert client.get(f"/api/jobs/{r1.json()['job_id']}").json()["status"] == "finished"
+
+    # Distinct bytes -> distinct hash -> must still finish (via real separation).
+    r2 = client.post("/api/separate", files={"file": ("c.wav", _wav_bytes(4096), "audio/wav")})
+    assert client.get(f"/api/jobs/{r2.json()['job_id']}").json()["status"] == "finished"
+
+
+# --- Rate limiting -----------------------------------------------------------
+
+
+def test_rate_limit_blocks_after_cap(client, monkeypatch):
+    _install_fake_popen(monkeypatch, returncode=0)
+    monkeypatch.setattr(get_settings(), "rate_limit_per_min", 3)
+
+    ok = 0
+    limited = False
+    for _ in range(5):
+        r = client.post("/api/separate", files={"file": ("s.wav", _wav_bytes(), "audio/wav")})
+        if r.status_code == 202:
+            ok += 1
+        elif r.status_code == 429:
+            limited = True
+            assert "Retry-After" in r.headers
+    assert ok == 3 and limited
+
+
+def test_rate_limit_disabled_when_zero(client, monkeypatch):
+    _install_fake_popen(monkeypatch, returncode=0)
+    monkeypatch.setattr(get_settings(), "rate_limit_per_min", 0)
+    for _ in range(4):
+        r = client.post("/api/separate", files={"file": ("s.wav", _wav_bytes(), "audio/wav")})
+        assert r.status_code == 202

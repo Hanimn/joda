@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import filetype
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -36,6 +36,7 @@ from redis.exceptions import RedisError
 from rq.exceptions import NoSuchJobError
 from rq.job import Job, JobStatus
 
+from . import cache, ratelimit
 from .cleanup import sweep
 from .config import get_settings
 from .observability import (
@@ -46,7 +47,7 @@ from .observability import (
 )
 from .queue import get_queue, get_redis
 from .storage import get_storage, upload_key
-from .worker import separate_job
+from .worker import cached_job, separate_job
 
 settings = get_settings()
 log = init_observability("web")
@@ -84,7 +85,7 @@ async def readyz():
     try:
         get_redis().ping()
     except RedisError as exc:
-        raise HTTPException(status_code=503, detail=f"redis unavailable: {exc}")
+        raise HTTPException(status_code=503, detail=f"redis unavailable: {exc}") from exc
     return {"status": "ready"}
 
 
@@ -97,8 +98,18 @@ async def metrics():
 
 
 @app.post("/api/separate", status_code=202)
-async def separate(file: UploadFile = File(...)):
+async def separate(request: Request, file: UploadFile = File(...)):
     """Validate + store the upload, enqueue separation, return a job handle."""
+    # Rate limit per client (fails open if Redis is down).
+    client_id = request.client.host if request.client else "unknown"
+    allowed, retry_after = ratelimit.check(get_redis(), client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please slow down.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in settings.allowed_suffixes:
         raise HTTPException(
@@ -134,24 +145,48 @@ async def separate(file: UploadFile = File(...)):
         )
 
     job_id = uuid.uuid4().hex[:12]
+    storage = get_storage()
+    redis = get_redis()
+
+    # Result cache: identical upload -> copy prior stems and skip Demucs.
+    digest = cache.content_hash(bytes(data))
+    hit = cache.get_hit(redis, storage, digest)
+    if hit:
+        canonical, stems = hit
+        cache.materialize(storage, canonical, job_id, stems)
+        try:
+            get_queue().enqueue(
+                cached_job, job_id, stems,
+                job_id=job_id,
+                result_ttl=settings.result_ttl,
+                failure_ttl=settings.failure_ttl,
+            )
+        except RedisError as err:
+            storage.delete_prefix(f"stems/{job_id}/")
+            raise HTTPException(status_code=503, detail="Job queue unavailable.") from err
+        JOBS_ENQUEUED.inc()
+        log_event(log, "cache hit enqueued", job_id=job_id, canonical=canonical)
+        return {"job_id": job_id, "status": "queued", "original_name": file.filename}
+
     key = upload_key(job_id, suffix)
-    get_storage().save(key, bytes(data))
+    storage.save(key, bytes(data))
 
     try:
         get_queue().enqueue(
             separate_job,
             job_id,
             key,
+            digest,
             job_id=job_id,  # reuse our id as the RQ job id
             job_timeout=settings.job_timeout,
             result_ttl=settings.result_ttl,
             failure_ttl=settings.failure_ttl,
         )
-    except RedisError:
-        get_storage().delete_prefix(f"uploads/{job_id}/")
+    except RedisError as err:
+        storage.delete_prefix(f"uploads/{job_id}/")
         raise HTTPException(
             status_code=503, detail="Job queue unavailable. Try again shortly."
-        )
+        ) from err
 
     JOBS_ENQUEUED.inc()
     UPLOAD_BYTES.observe(len(data))
@@ -168,9 +203,9 @@ async def job_status(job_id: str):
     try:
         job = Job.fetch(job_id, connection=get_redis())
     except NoSuchJobError:
-        raise HTTPException(status_code=404, detail="Unknown job.")
-    except RedisError:
-        raise HTTPException(status_code=503, detail="Job queue unavailable.")
+        raise HTTPException(status_code=404, detail="Unknown job.") from None
+    except RedisError as err:
+        raise HTTPException(status_code=503, detail="Job queue unavailable.") from err
 
     status = job.get_status(refresh=True)
     progress = int(job.meta.get("progress", 0)) if job.meta else 0

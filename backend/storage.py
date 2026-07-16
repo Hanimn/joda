@@ -47,6 +47,10 @@ class Storage(ABC):
     def exists(self, key: str) -> bool: ...
 
     @abstractmethod
+    def copy(self, src_key: str, dst_key: str) -> None:
+        """Server-side copy one object to a new key."""
+
+    @abstractmethod
     def open_local(self, key: str) -> Path:
         """Return a local filesystem path to the blob's bytes.
 
@@ -89,6 +93,11 @@ class LocalStorage(Storage):
 
     def exists(self, key: str) -> bool:
         return self._p(key).is_file()
+
+    def copy(self, src_key: str, dst_key: str) -> None:
+        dst = self._p(dst_key)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(self._p(src_key), dst)
 
     def open_local(self, key: str) -> Path:
         return self._p(key)
@@ -156,6 +165,13 @@ class S3Storage(Storage):
             return True
         except ClientError:
             return False
+
+    def copy(self, src_key: str, dst_key: str) -> None:
+        self._client.copy_object(
+            Bucket=self.bucket,
+            Key=dst_key,
+            CopySource={"Bucket": self.bucket, "Key": src_key},
+        )
 
     def open_local(self, key: str) -> Path:
         dest = self._local_root / "_dl" / key

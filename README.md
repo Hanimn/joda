@@ -34,9 +34,13 @@ backend/worker.py       RQ task: runs demucs in a separate process, reports live
 backend/queue.py        Shared Redis connection + RQ queue
 backend/storage.py      Blob store abstraction: local disk or S3/R2/GCS/minio (presigned URLs)
 backend/config.py       Env-driven settings (JODA_* / .env)
+backend/cache.py        Result cache: dedupe identical uploads by content hash
+backend/ratelimit.py    Per-client fixed-window rate limiting (Redis)
 backend/observability.py  Structured JSON logging, Sentry, Prometheus /metrics
 backend/cleanup.py      TTL sweeper for old uploads + stems (local + S3)
 Dockerfile / docker-compose.yml   Full stack: web + worker + redis + minio
+docker-compose.gpu.yml  Override: run workers on NVIDIA GPU
+.github/workflows/ci.yml  CI: ruff lint + pytest + docker build
 ```
 
 Separation runs **asynchronously**: the upload endpoint stores the file in the
@@ -105,6 +109,8 @@ Useful ones:
 | `JODA_S3_PUBLIC_ENDPOINT_URL` | *(=endpoint)* | Browser-reachable host for presigned URLs |
 | `JODA_MAX_UPLOAD_BYTES` | `104857600` (100 MB) | Reject larger uploads |
 | `JODA_ARTIFACT_TTL` | `21600` (6h) | Auto-delete artifacts older than this |
+| `JODA_CACHE_ENABLED` | `true` | Dedupe identical uploads (skip re-separation) |
+| `JODA_RATE_LIMIT_PER_MIN` | `10` | Per-IP cap on `/api/separate` (0 disables) |
 | `JODA_REDIS_URL` | `redis://localhost:6379/0` | Queue backend |
 | `JODA_SENTRY_DSN` | *(disabled)* | Error tracking |
 
@@ -173,13 +179,16 @@ cleanup, health probes, pinned deps, tests.
 Dockerfile + docker-compose (web + worker + redis + minio, weights baked in),
 structured JSON logging, Sentry hook, Prometheus `/metrics`.
 
-See [`PRODUCTION.md`](./PRODUCTION.md) for the full roadmap. Remaining (Phase 3):
+**Phase 3 (scale)** ✅ — result caching (dedupe identical uploads by content
+hash), per-client rate limiting, GPU worker compose profile, CI (ruff + pytest
++ docker build), and a deployment guide ([`DEPLOYMENT.md`](./DEPLOYMENT.md))
+covering autoscaling on queue depth and CDN-fronted downloads.
 
-- **GPU worker pool + autoscaling** on queue depth — the biggest throughput lever.
-- **Rate limiting / auth** before exposing publicly.
-- **CDN** in front of stem downloads; **result caching** by upload hash.
-- **CI** (test + lint + image build) on every push.
+See [`PRODUCTION.md`](./PRODUCTION.md) for the original roadmap. Possible next:
+
+- **Auth / quotas** — API keys with per-key limits (rate limiting is per-IP today).
 - **2-stem mode.** For just vocals vs. instrumental, add `--two-stems=vocals` — roughly half the work.
+- **Multi-format export** — MP3/FLAC alongside WAV.
 
 ## License
 

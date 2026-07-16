@@ -17,7 +17,7 @@ Called once at web-server startup, and runnable standalone on a schedule
 
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import get_settings
@@ -59,7 +59,7 @@ def _sweep_s3(settings, cutoff: float) -> dict:
         aws_access_key_id=settings.s3_access_key or None,
         aws_secret_access_key=settings.s3_secret_key or None,
     )
-    cutoff_dt = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+    cutoff_dt = datetime.fromtimestamp(cutoff, tz=UTC)
     counts = {"uploads/": 0, "stems/": 0}
     paginator = client.get_paginator("list_objects_v2")
     for prefix in counts:
